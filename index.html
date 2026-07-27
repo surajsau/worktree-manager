@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Worktree Manager · abema-androidtv</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #171a21;
+      --panel-2: #1e2028;
+      --border: #2a2e38;
+      --text: #e6e8ee;
+      --muted: #9aa0ad;
+      --accent: #5b8cff;
+      --accent-press: #3f6fe0;
+      --danger: #ff5c6c;
+      --danger-press: #e03d4e;
+      --ok: #3fcf8e;
+      --warn: #ffb84d;
+      --shadow: 0 10px 40px rgba(0,0,0,.5);
+    }
+    [data-theme="light"] {
+      --bg: #f4f6fb;
+      --panel: #ffffff;
+      --panel-2: #f0f2f7;
+      --border: #dfe3ec;
+      --text: #1a1d24;
+      --muted: #5c6472;
+      --accent: #2f6bff;
+      --accent-press: #1f55e0;
+      --danger: #e23b4c;
+      --danger-press: #c72a3a;
+      --ok: #16a06a;
+      --warn: #b9791b;
+      --shadow: 0 10px 40px rgba(20,30,60,.12);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+    header {
+      display: flex; align-items: center; gap: 16px;
+      padding: 20px 24px;
+      max-width: 900px; margin: 0 auto;
+    }
+    header h1 { font-size: 19px; margin: 0; font-weight: 650; }
+    header .sub { color: var(--muted); font-size: 13px; }
+    .spacer { flex: 1; }
+    main { max-width: 900px; margin: 0 auto; padding: 0 24px 60px; }
+
+    button {
+      font: inherit; cursor: pointer; border: 1px solid var(--border);
+      background: var(--panel-2); color: var(--text);
+      padding: 8px 14px; border-radius: 9px; transition: .12s;
+    }
+    button:hover { border-color: var(--accent); }
+    button:active { transform: translateY(1px); }
+    button:disabled { opacity: .5; cursor: default; transform: none; border-color: var(--border); }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+    .btn-primary:hover { background: var(--accent-press); border-color: var(--accent-press); }
+    .btn-danger { background: transparent; border-color: var(--border); color: var(--danger); }
+    .btn-danger:hover { border-color: var(--danger); background: rgba(255,92,108,.08); }
+    .btn-danger-solid { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+    .btn-danger-solid:hover { background: var(--danger-press); border-color: var(--danger-press); }
+    .icon-btn { padding: 8px; display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 36px; }
+    .icon-btn svg { width: 16px; height: 16px; display: block; }
+
+    /* Hover tooltip for icon-only buttons */
+    [data-tip] { position: relative; }
+    [data-tip]:hover::after {
+      content: attr(data-tip);
+      position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translateX(-50%);
+      background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+      padding: 4px 9px; border-radius: 7px; font-size: 11.5px; font-weight: 500;
+      white-space: nowrap; pointer-events: none; z-index: 20; box-shadow: var(--shadow);
+    }
+
+    .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+    .toolbar .count { color: var(--muted); font-size: 13px; margin-left: 2px; }
+
+    .list { display: flex; flex-direction: column; gap: 10px; }
+    .row {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 16px;
+      display: flex; align-items: center; gap: 14px;
+    }
+    .row .info { min-width: 0; flex: 1; }
+    .row .name { font-weight: 600; font-size: 15px; word-break: break-all; }
+    .row .meta { display: flex; align-items: center; gap: 10px; margin-top: 4px; color: var(--muted); font-size: 12.5px; flex-wrap: wrap; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+    .dot.clean { background: var(--ok); }
+    .dot.dirty { background: var(--warn); }
+    .tag { display: inline-flex; align-items: center; gap: 5px; }
+    .pill { background: var(--panel-2); border: 1px solid var(--border); border-radius: 20px; padding: 1px 9px; font-size: 11.5px; }
+    .pill.warn { color: var(--warn); border-color: var(--warn); }
+    .row .actions { display: flex; gap: 8px; flex: none; }
+
+    .empty, .loading { text-align: center; color: var(--muted); padding: 48px 0; }
+
+    .banner { border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; font-size: 13.5px; white-space: pre-wrap; display: none; }
+    .banner.err { background: rgba(255,92,108,.1); border: 1px solid var(--danger); color: var(--danger); display: block; }
+    .banner.ok { background: rgba(63,207,142,.1); border: 1px solid var(--ok); color: var(--ok); display: block; }
+    .banner.warn { background: rgba(255,184,77,.1); border: 1px solid var(--warn); color: var(--warn); display: block; }
+
+    /* Modal */
+    .overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.5);
+      display: none; align-items: center; justify-content: center; padding: 20px; z-index: 10;
+    }
+    .overlay.show { display: flex; }
+    .modal {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+      box-shadow: var(--shadow); width: 100%; max-width: 460px; padding: 22px;
+    }
+    .modal h2 { margin: 0 0 4px; font-size: 17px; }
+    .modal p.hint { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+    .branch-input { display: flex; align-items: stretch; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+    .branch-input .prefix { background: var(--panel-2); padding: 10px 12px; color: var(--muted); border-right: 1px solid var(--border); user-select: none; font-weight: 600; }
+    .branch-input input { flex: 1; border: 0; background: transparent; color: var(--text); padding: 10px 12px; font: inherit; outline: none; }
+    .branch-input:focus-within { border-color: var(--accent); }
+    .modal .preview { margin-top: 10px; font-size: 12.5px; color: var(--muted); min-height: 18px; word-break: break-all; }
+    .modal .modal-err { margin-top: 12px; color: var(--danger); font-size: 13px; white-space: pre-wrap; display: none; }
+    .modal .modal-err.show { display: block; }
+    .modal .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+    .del-target { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin: 4px 0 6px; }
+    .del-target .name { font-weight: 600; word-break: break-all; }
+    .del-warn { color: var(--warn); font-size: 13px; margin-top: 12px; display: flex; gap: 8px; align-items: flex-start; }
+
+    .spinner { width: 15px; height: 15px; border: 2px solid rgba(255,255,255,.35); border-top-color: #fff; border-radius: 50%; display: inline-block; animation: spin .7s linear infinite; vertical-align: -2px; }
+    .spinner.dark { border-color: rgba(120,120,120,.35); border-top-color: var(--text); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Worktree Manager</h1>
+      <div class="sub">abema-androidtv · branches off <code>origin/main</code></div>
+    </div>
+    <div class="spacer"></div>
+    <button id="themeBtn" class="icon-btn" data-tip="Toggle theme">🌙</button>
+  </header>
+
+  <main>
+    <div id="banner" class="banner"></div>
+
+    <div class="toolbar">
+      <button id="createBtn" class="btn-primary icon-btn" data-tip="Create worktree (off origin/main)" aria-label="Create worktree"></button>
+      <button id="addExistingBtn" class="icon-btn" data-tip="Add existing branch" aria-label="Add existing branch"></button>
+      <button id="refreshBtn" class="icon-btn" data-tip="Refresh" aria-label="Refresh"></button>
+      <span id="count" class="count"></span>
+    </div>
+
+    <div id="list" class="list"></div>
+  </main>
+
+  <!-- Create modal -->
+  <div id="createOverlay" class="overlay">
+    <div class="modal">
+      <h2>Create worktree</h2>
+      <p class="hint" id="createHint">A new branch off the latest <code>origin/main</code>.</p>
+      <div class="branch-input">
+        <span class="prefix">suraj/</span>
+        <input id="nameInput" placeholder="my-feature" autocomplete="off" spellcheck="false" />
+      </div>
+      <div id="createPreview" class="preview"></div>
+      <div id="createErr" class="modal-err"></div>
+      <div class="modal-actions">
+        <button id="createCancel">Cancel</button>
+        <button id="createConfirm" class="btn-primary">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add existing modal -->
+  <div id="addExistingOverlay" class="overlay">
+    <div class="modal">
+      <h2>Add existing branch</h2>
+      <p class="hint">A worktree for a branch that already exists (local or on <code>origin</code>).</p>
+      <div class="branch-input">
+        <input id="branchInput" placeholder="suraj/my-feature" autocomplete="off" spellcheck="false" />
+      </div>
+      <div id="addExistingPreview" class="preview"></div>
+      <div id="addExistingErr" class="modal-err"></div>
+      <div class="modal-actions">
+        <button id="addExistingCancel">Cancel</button>
+        <button id="addExistingConfirm" class="btn-primary">Add</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete modal -->
+  <div id="deleteOverlay" class="overlay">
+    <div class="modal">
+      <h2>Delete worktree</h2>
+      <p class="hint">Removes the worktree folder <em>and</em> deletes the branch.</p>
+      <div class="del-target">
+        <div id="delName" class="name"></div>
+        <div id="delState" class="meta" style="margin-top:6px;color:var(--muted);font-size:12.5px;"></div>
+      </div>
+      <div id="delWarn" class="del-warn" style="display:none;"></div>
+      <div id="deleteErr" class="modal-err"></div>
+      <div class="modal-actions">
+        <button id="deleteCancel">Cancel</button>
+        <button id="deleteConfirm" class="btn-danger-solid">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // --- Theme ---------------------------------------------------------------
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('themeBtn');
+    function applyTheme(t) {
+      root.setAttribute('data-theme', t);
+      themeBtn.textContent = t === 'dark' ? '🌙' : '☀️';
+    }
+    applyTheme(localStorage.getItem('wt-theme') || 'dark');
+    themeBtn.onclick = () => {
+      const next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      localStorage.setItem('wt-theme', next);
+      applyTheme(next);
+    };
+
+    // --- Icons (16px, stroke = currentColor) ----------------------------------
+    const svg = (paths) =>
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
+    const ICONS = {
+      plus: svg('<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>'),
+      branch: svg('<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>'),
+      branchPlus: svg('<line x1="6" y1="3" x2="6" y2="15"/><circle cx="6" cy="18" r="3"/><path d="M15.5 17.5A9 9 0 0 0 9 15"/><line x1="18" y1="6" x2="18" y2="14"/><line x1="14" y1="10" x2="22" y2="10"/>'),
+      refresh: svg('<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>'),
+      copy: svg('<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'),
+      open: svg('<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>'),
+      pull: svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>'),
+      trash: svg('<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>'),
+      check: svg('<polyline points="20 6 9 17 4 12"/>'),
+    };
+
+    // --- Helpers -------------------------------------------------------------
+    const $ = (id) => document.getElementById(id);
+    $('createBtn').innerHTML = ICONS.plus;
+    $('addExistingBtn').innerHTML = ICONS.branch;
+    $('refreshBtn').innerHTML = ICONS.refresh;
+    const banner = $('banner');
+    let bannerTimer;
+    function showBanner(msg, kind) {
+      clearTimeout(bannerTimer);
+      banner.textContent = msg;
+      banner.className = 'banner ' + kind;
+      if (kind === 'ok') bannerTimer = setTimeout(() => (banner.className = 'banner'), 4000);
+    }
+    async function api(method, path, body) {
+      try {
+        const res = await fetch(path, {
+          method,
+          headers: body ? { 'Content-Type': 'application/json' } : undefined,
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 404 && data.error === 'not found') {
+          data.error = 'The running server doesn’t know this action — it’s older than the page. Restart `node server.js` and try again.';
+        }
+        return { ok: res.ok, data };
+      } catch (err) {
+        return { ok: false, data: { error: 'Server unreachable — is `node server.js` running? (' + err.message + ')' } };
+      }
+    }
+    function spin(btn, on, label) {
+      if (on) {
+        btn.dataset.label = btn.innerHTML;
+        btn.disabled = true;
+        const dark = !btn.classList.contains('btn-primary') && !btn.classList.contains('btn-danger-solid');
+        btn.innerHTML = '<span class="spinner ' + (dark ? 'dark' : '') + '"></span> ' + (label || '');
+      } else {
+        btn.disabled = false;
+        btn.innerHTML = btn.dataset.label;
+      }
+    }
+
+    // --- List ----------------------------------------------------------------
+    const listEl = $('list');
+    const countEl = $('count');
+    function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
+
+    async function loadList() {
+      listEl.innerHTML = '<div class="loading"><span class="spinner dark"></span> Loading worktrees…</div>';
+      const { ok, data } = await api('GET', '/api/worktrees');
+      if (!ok) { listEl.innerHTML = ''; showBanner(data.error || 'Failed to load worktrees', 'err'); return; }
+      render(data.worktrees || []);
+    }
+
+    function render(wts) {
+      countEl.textContent = wts.length ? wts.length + (wts.length === 1 ? ' worktree' : ' worktrees') : '';
+      if (!wts.length) {
+        listEl.innerHTML = '<div class="empty">No worktrees yet.<br>Click the ＋ button to make one.</div>';
+        return;
+      }
+      listEl.innerHTML = '';
+      for (const w of wts) {
+        const row = document.createElement('div');
+        row.className = 'row';
+        const ab = [];
+        if (w.ahead) ab.push('↑' + w.ahead + ' ahead');
+        if (w.behind) ab.push('↓' + w.behind + ' behind');
+        row.innerHTML =
+          '<div class="info">' +
+            '<div class="name">' + esc(w.branch) + '</div>' +
+            '<div class="meta">' +
+              '<span class="tag"><span class="dot ' + (w.dirty ? 'dirty' : 'clean') + '"></span>' + (w.dirty ? 'uncommitted changes' : 'clean') + '</span>' +
+              (ab.length ? '<span class="pill">' + ab.join(' · ') + '</span>' : '') +
+              (w.unpushed ? '<span class="pill warn">' + w.unpushed + ' unpushed</span>' : '') +
+              (w.conflicts ? '<span class="pill warn">⚠️ merge conflict</span>' : '') +
+            '</div>' +
+          '</div>' +
+          '<div class="actions">' +
+            (w.behind && !w.conflicts
+              ? '<button class="pull icon-btn" data-tip="Pull latest origin/main (↓' + w.behind + ' behind)" aria-label="Pull latest from origin/main">' + ICONS.pull + '</button>'
+              : '') +
+            '<button class="branch icon-btn" data-tip="New worktree off ' + esc(w.branch) + '" aria-label="Create worktree off this branch">' + ICONS.branchPlus + '</button>' +
+            '<button class="copy icon-btn" data-tip="Copy worktree path" aria-label="Copy worktree path">' + ICONS.copy + '</button>' +
+            '<button class="open icon-btn btn-primary" data-tip="Open in Android Studio" aria-label="Open in Android Studio">' + ICONS.open + '</button>' +
+            '<button class="del icon-btn btn-danger" data-tip="Delete worktree" aria-label="Delete worktree">' + ICONS.trash + '</button>' +
+          '</div>';
+        const pullBtn = row.querySelector('.pull');
+        if (pullBtn) pullBtn.onclick = (e) => pullWt(w, e.currentTarget);
+        row.querySelector('.branch').onclick = () => openCreate(w.branch);
+        row.querySelector('.copy').onclick = (e) => copyPath(w, e.currentTarget);
+        row.querySelector('.open').onclick = (e) => openWt(w, e.currentTarget);
+        row.querySelector('.del').onclick = () => askDelete(w);
+        listEl.appendChild(row);
+      }
+    }
+
+    async function copyPath(w, btn) {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(w.path);
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = w.path;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        const orig = btn.innerHTML;
+        const origTip = btn.dataset.tip;
+        btn.innerHTML = ICONS.check;
+        btn.dataset.tip = 'Copied!';
+        setTimeout(() => { btn.innerHTML = orig; btn.dataset.tip = origTip; }, 1400);
+      } catch (err) {
+        showBanner('Failed to copy path: ' + err.message, 'err');
+      }
+    }
+
+    async function openWt(w, btn) {
+      spin(btn, true, 'Opening');
+      const { ok, data } = await api('POST', '/api/open', { path: w.path });
+      spin(btn, false);
+      if (!ok) showBanner(data.error || 'Failed to open Android Studio', 'err');
+      else showBanner('Opening ' + w.branch + ' in Android Studio…', 'ok');
+    }
+
+    async function pullWt(w, btn) {
+      spin(btn, true);
+      const { ok, data } = await api('POST', '/api/pull', { path: w.path });
+      spin(btn, false);
+      if (ok) {
+        showBanner(w.branch + ': ' + (data.output || 'Pulled latest origin/main'), 'ok');
+      } else if (data.conflict) {
+        showBanner('⚠️ ' + w.branch + ': ' + data.error, 'warn');
+      } else {
+        showBanner(data.error || 'Failed to pull latest', 'err');
+        return;
+      }
+      loadList();
+    }
+
+    // --- Create modal --------------------------------------------------------
+    const createOverlay = $('createOverlay');
+    const nameInput = $('nameInput');
+    const createPreview = $('createPreview');
+    const createErr = $('createErr');
+    const createConfirm = $('createConfirm');
+    let createBase = null; // null => script default (origin/main)
+
+    function openCreate(base) {
+      createBase = base || null;
+      $('createHint').innerHTML = base
+        ? 'A new branch off <code>' + esc(base) + '</code>.'
+        : 'A new branch off the latest <code>origin/main</code>.';
+      nameInput.value = '';
+      createPreview.textContent = '';
+      createErr.className = 'modal-err';
+      createOverlay.classList.add('show');
+      setTimeout(() => nameInput.focus(), 30);
+    }
+    function closeCreate() { createOverlay.classList.remove('show'); }
+
+    nameInput.addEventListener('input', () => {
+      const v = nameInput.value.trim();
+      createPreview.textContent = v
+        ? 'Branch: suraj/' + v + '  →  folder: ' + ('suraj/' + v).replace(/\//g, '+')
+        : '';
+    });
+    nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doCreate(); });
+
+    async function doCreate() {
+      const name = nameInput.value.trim();
+      createErr.className = 'modal-err';
+      if (!name) { createErr.textContent = 'Please enter a name.'; createErr.className = 'modal-err show'; return; }
+      spin(createConfirm, true, 'Creating');
+      const { ok, data } = await api('POST', '/api/worktrees', createBase ? { name, base: createBase } : { name });
+      spin(createConfirm, false);
+      if (!ok) { createErr.textContent = data.error || 'Failed to create worktree.'; createErr.className = 'modal-err show'; return; }
+      closeCreate();
+      showBanner(data.output || 'Worktree created', 'ok');
+      loadList();
+    }
+
+    // --- Add existing modal --------------------------------------------------
+    const addExistingOverlay = $('addExistingOverlay');
+    const branchInput = $('branchInput');
+    const addExistingPreview = $('addExistingPreview');
+    const addExistingErr = $('addExistingErr');
+    const addExistingConfirm = $('addExistingConfirm');
+
+    function openAddExisting() {
+      branchInput.value = '';
+      addExistingPreview.textContent = '';
+      addExistingErr.className = 'modal-err';
+      addExistingOverlay.classList.add('show');
+      setTimeout(() => branchInput.focus(), 30);
+    }
+    function closeAddExisting() { addExistingOverlay.classList.remove('show'); }
+
+    branchInput.addEventListener('input', () => {
+      const v = branchInput.value.trim().replace(/^origin\//, '');
+      addExistingPreview.textContent = v ? 'folder: ' + v.replace(/\//g, '+') : '';
+    });
+    branchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doAddExisting(); });
+
+    async function doAddExisting() {
+      const branch = branchInput.value.trim();
+      addExistingErr.className = 'modal-err';
+      if (!branch) { addExistingErr.textContent = 'Please paste a branch name.'; addExistingErr.className = 'modal-err show'; return; }
+      spin(addExistingConfirm, true, 'Adding');
+      const { ok, data } = await api('POST', '/api/worktrees/existing', { branch });
+      spin(addExistingConfirm, false);
+      if (!ok) { addExistingErr.textContent = data.error || 'Failed to add worktree.'; addExistingErr.className = 'modal-err show'; return; }
+      closeAddExisting();
+      showBanner(data.output || 'Worktree added', 'ok');
+      loadList();
+    }
+
+    // --- Delete modal --------------------------------------------------------
+    const deleteOverlay = $('deleteOverlay');
+    const deleteConfirm = $('deleteConfirm');
+    let delTarget = null;
+
+    function askDelete(w) {
+      delTarget = w;
+      $('delName').textContent = w.branch;
+      const bits = [w.dirty ? 'Has uncommitted changes' : 'Clean'];
+      $('delState').textContent = bits.join(' · ');
+      const warn = $('delWarn');
+      if (w.unpushed || w.dirty) {
+        const parts = [];
+        if (w.unpushed) parts.push(w.unpushed + ' commit' + (w.unpushed === 1 ? '' : 's') + ' not pushed to any remote');
+        if (w.dirty) parts.push('uncommitted changes');
+        warn.innerHTML = '⚠️ <div>This worktree has <strong>' + parts.join('</strong> and <strong>') + '</strong>. Deleting is permanent and cannot be undone.</div>';
+        warn.style.display = 'flex';
+      } else {
+        warn.style.display = 'none';
+      }
+      $('deleteErr').className = 'modal-err';
+      deleteOverlay.classList.add('show');
+    }
+    function closeDelete() { deleteOverlay.classList.remove('show'); delTarget = null; }
+
+    async function doDelete() {
+      if (!delTarget) return;
+      const err = $('deleteErr');
+      err.className = 'modal-err';
+      spin(deleteConfirm, true, 'Deleting');
+      const { ok, data } = await api('POST', '/api/delete', { path: delTarget.path, branch: delTarget.branch });
+      spin(deleteConfirm, false);
+      if (!ok) { err.textContent = data.error || 'Failed to delete.'; err.className = 'modal-err show'; return; }
+      const branch = delTarget.branch;
+      closeDelete();
+      showBanner(data.warning ? data.warning : 'Deleted ' + branch, data.warning ? 'err' : 'ok');
+      loadList();
+    }
+
+    // --- Wire up -------------------------------------------------------------
+    $('createBtn').onclick = () => openCreate();
+    $('createCancel').onclick = closeCreate;
+    $('createConfirm').onclick = doCreate;
+    $('addExistingBtn').onclick = openAddExisting;
+    $('addExistingCancel').onclick = closeAddExisting;
+    $('addExistingConfirm').onclick = doAddExisting;
+    $('deleteCancel').onclick = closeDelete;
+    $('deleteConfirm').onclick = doDelete;
+    $('refreshBtn').onclick = loadList;
+    [createOverlay, addExistingOverlay, deleteOverlay].forEach((o) =>
+      o.addEventListener('click', (e) => { if (e.target === o) o.classList.remove('show'); })
+    );
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { closeCreate(); closeAddExisting(); closeDelete(); }
+    });
+
+    loadList();
+  </script>
+</body>
+</html>

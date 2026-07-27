@@ -1,0 +1,7 @@
+# Files copied from the main repo into each new worktree on create.
+# One path per line, relative to the main abema-androidtv repo root.
+# Blank lines and lines starting with # are ignored.
+# Edits take effect on the next create — no server restart needed.
+
+local.properties
+.claude/settings.local.json

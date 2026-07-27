@@ -1,0 +1,729 @@
+import SwiftUI
+
+enum Mode: Equatable {
+    case list
+    case create(base: String?) // nil => latest origin/main
+    case addExisting
+    case confirmDelete(Worktree)
+}
+
+struct MenuView: View {
+    @EnvironmentObject var store: Store
+    @State private var mode: Mode = .list
+    @State private var expandedPath: String? // accordion: at most one row expanded
+    @State private var collapsedFolders: Set<String> = []
+    @Environment(\.openSettings) private var openSettings
+    @AppStorage(SettingsKeys.featureAddExisting) private var featureAddExisting = true
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            content
+            if let banner = store.banner, mode == .list {
+                Divider()
+                BannerView(banner: banner) { store.banner = nil }
+            }
+            Divider()
+            footer
+        }
+        .frame(width: 380)
+        .background(WindowClamp())
+        .onAppear {
+            store.banner = nil
+            mode = .list
+            expandedPath = nil
+            Task { await store.refresh() }
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            Text("Worktrees")
+                .font(.headline)
+            if store.isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(.leading, 2)
+            }
+            Spacer()
+            Button {
+                Task { await store.refresh() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(HoverBackgroundButtonStyle())
+            .disabled(store.isLoading)
+            .help("Refresh")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch mode {
+        case .list:
+            listView
+        case .create(let base):
+            CreateForm(base: base) { mode = .list }
+        case .addExisting:
+            AddExistingForm { mode = .list }
+        case .confirmDelete(let wt):
+            ConfirmDeleteView(wt: wt) { mode = .list }
+        }
+    }
+
+    private var listView: some View {
+        Group {
+            if store.worktrees.isEmpty {
+                Text(store.hasLoadedOnce ? "No worktrees yet." : "Loading…")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+            } else if visibleRowCount <= 12 {
+                // Natural sizing: a ScrollView inside a MenuBarExtra window
+                // collapses to its minimum height, so avoid it when the list fits.
+                rows
+            } else {
+                ScrollView {
+                    rows
+                }
+                .frame(height: 12 * 44)
+            }
+        }
+    }
+
+    private var tree: FolderNode {
+        FolderNode.build(from: store.worktrees)
+    }
+
+    // Rows currently on screen (folders + non-hidden worktrees), so the
+    // scroll-vs-natural-sizing decision tracks what is actually visible.
+    private var visibleRowCount: Int {
+        tree.visibleRowCount(collapsed: collapsedFolders)
+    }
+
+    private var rows: some View {
+        VStack(spacing: 0) {
+            folderContents(of: tree, depth: 0)
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func folderContents(of node: FolderNode, depth: Int) -> some View {
+        ForEach(node.subfolders) { folder in
+            FolderRow(
+                name: folder.name,
+                depth: depth,
+                collapsed: collapsedFolders.contains(folder.path)
+            ) {
+                if collapsedFolders.contains(folder.path) {
+                    collapsedFolders.remove(folder.path)
+                } else {
+                    collapsedFolders.insert(folder.path)
+                }
+            }
+            if !collapsedFolders.contains(folder.path) {
+                AnyView(folderContents(of: folder, depth: depth + 1))
+            }
+        }
+        ForEach(node.worktrees) { wt in
+            WorktreeRow(
+                wt: wt,
+                displayName: wt.leafName,
+                indent: CGFloat(depth) * 14,
+                expanded: expandedPath == wt.path,
+                onToggleExpand: {
+                    // Expanding one row collapses whichever was open.
+                    expandedPath = expandedPath == wt.path ? nil : wt.path
+                },
+                onBranchFrom: { mode = .create(base: wt.branch) },
+                onDelete: { mode = .confirmDelete(wt) }
+            )
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            Button {
+                store.banner = nil
+                mode = .create(base: nil)
+            } label: {
+                Label("New", systemImage: "plus")
+            }
+            if featureAddExisting {
+                Button("Add Existing…") {
+                    store.banner = nil
+                    mode = .addExisting
+                }
+            }
+            Spacer()
+            Button {
+                // Settings is a regular window; bring the (accessory) app
+                // forward or it opens behind whatever is focused.
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                openSettings()
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(HoverBackgroundButtonStyle())
+            .help("Settings")
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+}
+
+// MARK: - Folder tree
+
+// Worktree names are branch paths (e.g. "xx/aa/bb"); every segment before the
+// last becomes a nested folder, the last is the worktree's leaf name.
+struct FolderNode: Identifiable {
+    let path: String // full segment path from the root, e.g. "xx/aa"
+    let name: String // last segment
+    var subfolders: [FolderNode] = []
+    var worktrees: [Worktree] = []
+
+    var id: String { path }
+
+    static func build(from worktrees: [Worktree]) -> FolderNode {
+        var root = FolderNode(path: "", name: "")
+        for wt in worktrees {
+            let segments = wt.name.split(separator: "/").map(String.init)
+            root.insert(wt, folders: segments.dropLast())
+        }
+        return root
+    }
+
+    private mutating func insert(_ wt: Worktree, folders: ArraySlice<String>) {
+        guard let first = folders.first else {
+            worktrees.append(wt)
+            return
+        }
+        let childPath = path.isEmpty ? first : path + "/" + first
+        if let i = subfolders.firstIndex(where: { $0.name == first }) {
+            subfolders[i].insert(wt, folders: folders.dropFirst())
+        } else {
+            var child = FolderNode(path: childPath, name: first)
+            child.insert(wt, folders: folders.dropFirst())
+            subfolders.append(child)
+        }
+    }
+
+    func visibleRowCount(collapsed: Set<String>) -> Int {
+        var count = worktrees.count
+        for folder in subfolders {
+            count += 1
+            if !collapsed.contains(folder.path) {
+                count += folder.visibleRowCount(collapsed: collapsed)
+            }
+        }
+        return count
+    }
+}
+
+extension Worktree {
+    var leafName: String {
+        name.split(separator: "/").last.map(String.init) ?? name
+    }
+}
+
+struct FolderRow: View {
+    let name: String
+    let depth: Int
+    let collapsed: Bool
+    let onToggle: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 6) {
+                Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 10)
+                Image(systemName: collapsed ? "folder" : "folder.fill")
+                    .foregroundStyle(.secondary)
+                Text(name)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.leading, CGFloat(depth) * 14)
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(hovering ? Color.primary.opacity(0.06) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, 4)
+        .onHover { hovering = $0 }
+    }
+}
+
+// MARK: - Row
+
+struct WorktreeRow: View {
+    let wt: Worktree
+    var displayName: String? = nil
+    var indent: CGFloat = 0
+    let expanded: Bool
+    var onToggleExpand: () -> Void
+    var onBranchFrom: () -> Void
+    var onDelete: () -> Void
+
+    @EnvironmentObject var store: Store
+    @State private var hovering = false
+    @AppStorage(SettingsKeys.featurePullLatest) private var featurePull = true
+    @AppStorage(SettingsKeys.featureBranchFrom) private var featureBranchFrom = true
+    @AppStorage(SettingsKeys.featureCopyPath) private var featureCopyPath = true
+    @AppStorage(SettingsKeys.featureOpenInTerminal) private var featureTerminal = true
+    @AppStorage(SettingsKeys.featureOpenInStudio) private var featureStudio = true
+    @AppStorage(SettingsKeys.terminalApp) private var terminalApp = "Terminal"
+
+    private var busy: Bool { store.busyPaths.contains(wt.path) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            mainRow
+            if expanded {
+                actionRow
+            }
+        }
+        .background(hovering || expanded ? Color.primary.opacity(0.06) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, 4)
+        .onHover { hovering = $0 }
+    }
+
+    private var mainRow: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(wt.conflicts ? Color.red : wt.dirty ? Color.orange : Color.green)
+                .frame(width: 8, height: 8)
+                .help(wt.conflicts ? "Merge conflict" : wt.dirty ? "Uncommitted changes" : "Clean")
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(displayName ?? wt.name)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(wt.branch)
+                HStack(spacing: 8) {
+                    if wt.conflicts {
+                        Label("merge conflict", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                    }
+                    if wt.behind > 0 { Text("↓\(wt.behind)") }
+                    if wt.ahead > 0 { Text("↑\(wt.ahead)") }
+                    if wt.unpushed > 0 {
+                        Text("\(wt.unpushed) unpushed")
+                            .foregroundStyle(.orange)
+                    }
+                    if !wt.conflicts && wt.behind == 0 && wt.ahead == 0 && wt.unpushed == 0 && !wt.dirty {
+                        Text("up to date")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            if busy {
+                ProgressView()
+                    .controlSize(.small)
+            } else if hovering || expanded {
+                HStack(spacing: 2) {
+                    if featureCopyPath {
+                        RowButton(icon: "doc.on.doc", help: "Copy worktree path") {
+                            let pb = NSPasteboard.general
+                            pb.clearContents()
+                            pb.setString(wt.path, forType: .string)
+                            store.banner = Store.Banner(text: "Copied \(wt.path)", isError: false)
+                        }
+                    }
+                    if featureTerminal {
+                        AppIconButton(icon: AppIcons.terminal(named: terminalApp), fallbackIcon: "terminal",
+                                      help: terminalApp == TerminalApps.cmuxName
+                                          ? "Open cmux tab here (reuses one already at this folder)"
+                                          : "Open in \(terminalApp)") {
+                            Task { await store.openInTerminal(wt) }
+                        }
+                    }
+                    if featureStudio {
+                        AppIconButton(icon: AppIcons.studio, fallbackIcon: "hammer",
+                                      help: "Open in Android Studio") {
+                            Task { await store.open(wt) }
+                        }
+                    }
+                    RowButton(icon: expanded ? "chevron.up" : "chevron.down", help: "More actions") {
+                        onToggleExpand()
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.leading, indent)
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+    }
+
+    // Expanded accordion section: the destructive / branch-changing actions.
+    private var actionRow: some View {
+        HStack(spacing: 8) {
+            if featurePull {
+                Button {
+                    Task { await store.pull(wt) }
+                } label: {
+                    Label("Pull main", systemImage: "arrow.down.circle")
+                }
+                .disabled(busy || wt.behind == 0 || wt.conflicts)
+                .help("Pull latest origin/main (merge)")
+            }
+            if featureBranchFrom {
+                Button {
+                    onBranchFrom()
+                } label: {
+                    Label("Branch from", systemImage: "arrow.triangle.branch")
+                }
+                .disabled(busy)
+                .help("New worktree based on this branch")
+            }
+            Spacer()
+            Button(role: .destructive) {
+                onDelete()
+            } label: {
+                Label("Delete", systemImage: "trash")
+                    .foregroundStyle(.red)
+            }
+            .disabled(busy)
+            .help("Delete worktree and branch")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .padding(.top, 2)
+        .padding(.bottom, 8)
+    }
+}
+
+// Row buttons for external apps, using the installed app's real icon
+// (SF Symbols has no Android/cmux glyphs); fall back to a symbol if missing.
+@MainActor
+enum AppIcons {
+    static let studio: NSImage? = {
+        let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.android.studio")
+            ?? URL(fileURLWithPath: "/Applications/\(Config.studioApp).app")
+        return icon(forAppAt: url)
+    }()
+
+    // Icon for whichever terminal app is selected in Settings.
+    static func terminal(named name: String) -> NSImage? {
+        if let cached = terminalCache[name] { return cached }
+        let bundleID = TerminalApps.known.first { $0.name == name }?.bundleID
+        let url = bundleID.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
+            ?? URL(fileURLWithPath: "/Applications/\(name).app")
+        let icon = icon(forAppAt: url)
+        terminalCache[name] = icon
+        return icon
+    }
+
+    private static var terminalCache: [String: NSImage?] = [:]
+
+    private static func icon(forAppAt url: URL) -> NSImage? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        icon.size = NSSize(width: 17, height: 17)
+        return icon
+    }
+}
+
+struct AppIconButton: View {
+    let icon: NSImage?
+    let fallbackIcon: String
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            if let icon {
+                Image(nsImage: icon)
+                    .frame(width: 22, height: 20)
+            } else {
+                Image(systemName: fallbackIcon)
+                    .frame(width: 22, height: 20)
+            }
+        }
+        .buttonStyle(HoverBackgroundButtonStyle())
+        .help(help)
+    }
+}
+
+struct RowButton: View {
+    let icon: String
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .frame(width: 22, height: 20)
+        }
+        .buttonStyle(HoverBackgroundButtonStyle())
+        .help(help)
+    }
+}
+
+// MARK: - Create
+
+struct CreateForm: View {
+    let base: String? // nil => latest origin/main
+    var onDone: () -> Void
+
+    @EnvironmentObject var store: Store
+    @State private var name = ""
+    @State private var submitting = false
+    @State private var error: String?
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("New Worktree")
+                .font(.headline)
+            HStack(spacing: 0) {
+                Text(Config.branchPrefix)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 6)
+                TextField("branch-name", text: $name)
+                    .textFieldStyle(.plain)
+                    .focused($focused)
+                    .onSubmit { submit() }
+                    .disabled(submitting)
+            }
+            .padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+            Text(base.map { "Based on \($0) (local tip, no fetch)" } ?? "Based on the latest origin/main (fetched)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let error {
+                ErrorText(error)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { onDone() }
+                    .disabled(submitting)
+                Button(submitting ? "Creating…" : "Create") { submit() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(submitting || trimmedName.isEmpty)
+            }
+        }
+        .padding(12)
+        .onAppear {
+            if name.isEmpty, let folders = baseFolders {
+                name = folders
+            }
+            focused = true
+        }
+    }
+
+    // Folder portion of the base branch (prefix stripped, last segment dropped),
+    // pre-filled so worktrees created from a foldered branch land in the same folder.
+    private var baseFolders: String? {
+        guard var base else { return nil }
+        if base.hasPrefix(Config.branchPrefix) {
+            base = String(base.dropFirst(Config.branchPrefix.count))
+        }
+        guard let lastSlash = base.lastIndex(of: "/") else { return nil }
+        return String(base[...lastSlash])
+    }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func submit() {
+        guard !trimmedName.isEmpty, !submitting else { return }
+        submitting = true
+        error = nil
+        Task {
+            let outcome = await store.create(name: trimmedName, base: base)
+            submitting = false
+            if outcome.ok {
+                onDone()
+            } else {
+                error = outcome.message ?? "create failed"
+            }
+        }
+    }
+}
+
+// MARK: - Add existing
+
+struct AddExistingForm: View {
+    var onDone: () -> Void
+
+    @EnvironmentObject var store: Store
+    @State private var branch = ""
+    @State private var submitting = false
+    @State private var error: String?
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Add Existing Branch")
+                .font(.headline)
+            TextField("branch name (origin/ prefix optional)", text: $branch)
+                .textFieldStyle(.roundedBorder)
+                .focused($focused)
+                .onSubmit { submit() }
+                .disabled(submitting)
+            Text("Fetches origin, then checks the branch out in a new worktree.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let error {
+                ErrorText(error)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { onDone() }
+                    .disabled(submitting)
+                Button(submitting ? "Adding…" : "Add") { submit() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(submitting || trimmedBranch.isEmpty)
+            }
+        }
+        .padding(12)
+        .onAppear { focused = true }
+    }
+
+    private var trimmedBranch: String {
+        branch.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func submit() {
+        guard !trimmedBranch.isEmpty, !submitting else { return }
+        submitting = true
+        error = nil
+        Task {
+            let outcome = await store.addExisting(branch: trimmedBranch)
+            submitting = false
+            if outcome.ok {
+                onDone()
+            } else {
+                error = outcome.message ?? "add failed"
+            }
+        }
+    }
+}
+
+// MARK: - Delete confirmation
+
+struct ConfirmDeleteView: View {
+    let wt: Worktree
+    var onDone: () -> Void
+
+    @EnvironmentObject var store: Store
+    @State private var submitting = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Delete \(wt.branch)?")
+                .font(.headline)
+            Text("Removes the worktree folder and deletes the branch.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if wt.dirty {
+                Label("Has uncommitted changes — they will be lost.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if wt.unpushed > 0 {
+                Label("\(wt.unpushed) commit\(wt.unpushed == 1 ? "" : "s") not pushed anywhere — will be lost.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { onDone() }
+                    .disabled(submitting)
+                Button(submitting ? "Deleting…" : "Delete", role: .destructive) {
+                    submitting = true
+                    Task {
+                        await store.delete(wt)
+                        submitting = false
+                        onDone()
+                    }
+                }
+                .disabled(submitting)
+            }
+        }
+        .padding(12)
+    }
+}
+
+// MARK: - Bits
+
+struct BannerView: View {
+    let banner: Store.Banner
+    var onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: banner.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .foregroundStyle(banner.isError ? Color.red : Color.green)
+            Text(banner.text)
+                .font(.caption)
+                .lineLimit(6)
+                .textSelection(.enabled)
+            Spacer()
+            Button {
+                onDismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2)
+            }
+            .buttonStyle(HoverBackgroundButtonStyle())
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+}
+
+struct ErrorText: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.red)
+            .lineLimit(6)
+            .textSelection(.enabled)
+    }
+}
+
+// MARK: - Custom Button Style
+
+struct HoverBackgroundButtonStyle: ButtonStyle {
+    @State private var hovering = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.primary.opacity(configuration.isPressed ? 0.15 : 0.08))
+                    .opacity(hovering ? 1 : 0)
+            )
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+    }
+}

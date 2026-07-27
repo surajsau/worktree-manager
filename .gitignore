@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Swift / SwiftPM build output
+macos/.build/
+macos/*.app/
+*.xcodeproj
+.swiftpm/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Logs & env
+*.log
+.env
+.env.local
