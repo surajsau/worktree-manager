@@ -78,7 +78,16 @@ enum GitService {
         async let dirtyRes = git(["status", "--porcelain"], cwd: path)
         async let baseRefRes = determinBaseRef(branch: branch, cwd: path)
         async let unpushedRes = git(["rev-list", "--count", "HEAD", "--not", "--remotes"], cwd: path)
+        // The commits this branch adds on top of the trunk: an empty list means
+        // it is fully merged, and the SHAs let StackBuilder find the branch's
+        // parent when there is no PR to name a base.
+        async let aboveTrunkRes = git(["rev-list", "HEAD", "--not", Config.trunkRef], cwd: path)
+        async let tipRes = git(["rev-parse", "HEAD"], cwd: path)
+        async let behindTrunkRes = git(["rev-list", "--count", "HEAD..\(Config.trunkRef)"], cwd: path)
+        async let ownCommitsRes = hasOwnCommits(branch: branch, cwd: path)
         let (dirty, baseRef, unpushedR) = await (dirtyRes, baseRefRes, unpushedRes)
+        let (aboveTrunk, tipR, behindTrunkR) = await (aboveTrunkRes, tipRes, behindTrunkRes)
+        let ownCommits = await ownCommitsRes
 
         async let aheadBehindRes = git(["rev-list", "--left-right", "--count", "\(baseRef)...HEAD"], cwd: path)
         let aheadBehind = await aheadBehindRes
@@ -108,19 +117,59 @@ enum GitService {
 
         let branchName = branch ?? "(detached)"
         let artifacts = agentArtifacts(branch: branch)
+        let contained = Set(aboveTrunk.stdout.split(whereSeparator: \.isNewline).map(String.init))
         return Worktree(
             branch: branchName,
             name: branch.map { $0.hasPrefix(Config.branchPrefix) ? String($0.dropFirst(Config.branchPrefix.count)) : $0 } ?? branchName,
             path: path,
             folder: (path as NSString).lastPathComponent,
             dirty: !statusLines.isEmpty,
+            dirtyCount: statusLines.count,
             conflicts: conflicts,
             ahead: ahead,
             behind: behind,
             unpushed: unpushed,
             ticketPath: artifacts.ticket,
-            shipRunPath: artifacts.shipRun
+            shipRunPath: artifacts.shipRun,
+            commitsAboveTrunk: contained.count,
+            hasOwnCommits: ownCommits,
+            behindTrunk: Int(behindTrunkR.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0,
+            tip: tipR.stdout.trimmingCharacters(in: .whitespacesAndNewlines),
+            containedTips: contained
         )
+    }
+
+    // Did a commit ever land on this branch? The branch reflog keeps every
+    // entry that moved the ref, and commit entries are never rewritten away —
+    // a rebased branch still shows the original `commit:` lines. A branch that
+    // has only its `branch: Created from …` entry has never been worked on.
+    //
+    // Reflog subjects that mean own work: `commit:`, `commit (amend):`,
+    // `rebase (pick):`, `cherry-pick:`, `am:`, `revert:`. A `merge …:
+    // Fast-forward` is explicitly not own work — that is the trunk catching a
+    // branch up, which leaves it just as empty as it was.
+    private static func hasOwnCommits(branch: String?, cwd: String) async -> Bool {
+        // Detached HEAD has no branch reflog to read; assume real history
+        // rather than calling it a fresh branch.
+        guard let branch else { return true }
+        let res = await git(["reflog", "show", "--format=%gs", branch], cwd: cwd)
+        guard res.code == 0 else { return true }
+        let ownWork = ["commit", "rebase", "cherry-pick", "am", "revert"]
+        return res.stdout.split(separator: "\n").contains { line in
+            let subject = line.trimmingCharacters(in: .whitespaces)
+            guard let verb = subject.split(whereSeparator: { $0 == " " || $0 == ":" }).first else { return false }
+            if verb == "merge" { return !subject.hasSuffix("Fast-forward") }
+            return ownWork.contains(String(verb))
+        }
+    }
+
+    // MARK: - Trunk freshness
+
+    // Merged-branch detection and stack roots are measured against the local
+    // origin/main ref, which is only as fresh as the last fetch — a stale one
+    // under-reports merges. Run before a full refresh, not on every menu open.
+    static func fetchTrunk() async {
+        _ = await git(["fetch", "origin", Config.trunkRef.shortRef, "--quiet"])
     }
 
     // A branch's agent artifacts: the tracker feature dir and the ship run dir,

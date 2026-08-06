@@ -3,9 +3,9 @@ A tiny local tool to create, delete, and open git worktrees for **abema-androidt
 
 Two frontends over the same git logic and shell scripts:
 
-- **macOS menu bar app** (`macos/`) — native SwiftUI dropdown, the recommended way to use it.
+- **macOS menu bar app** (`macos/`) — native SwiftUI dropdown with a GitHub PR **stack view**. The recommended way to use it.
   
-- **Web app** (`server.js` + `index.html`) — the original zero-dependency Node server.
+- **Web app** (`server.js` + `index.html`) — the original zero-dependency Node server. Still the flat folder view; it has no PR/stack support.
   
 ## Menu bar app (macOS)
 ```bash
@@ -13,20 +13,68 @@ macos/build-app.sh
 open macos/WorktreeManager.app
 ```
 
-Builds with Xcode Command Line Tools only (Swift 6 / macOS 14+, no Xcode needed). A ⎇ branch icon appears in the status bar; clicking it opens the worktree list. Everything the web UI does is in the dropdown:
+Builds with Xcode Command Line Tools only (Swift 6 / macOS 14+, no Xcode needed). A ⎇ branch icon appears in the status bar; clicking it opens the **stack view**.
 
-- Rows show the clean/dirty dot, ahead/behind vs `origin/main`, unpushed count, and a merge-conflict warning. Hovering a row reveals its actions: **pull latest** (only when behind), **new worktree off this branch**, **open in Android Studio**, and **delete**.
-  
-- **New** / **Add Existing…** buttons in the footer open the same create and add-existing flows (fixed `suraj/` prefix on create; both delegate to the shell scripts below).
-  
+### Stack view
+
+The dropdown is organised by PR stack, not by folder. Each card is one chain of branches sitting on a trunk (`main`, `minor`, …), named after the branch at the bottom — the one that merges first.
+
+```
+▾ ▤ load-previous-mugen  episode-list          ↓90  6 → main  ❗
+  ● load-previous-mugen        #18531 ↗  💬 (avatar) 3
+  ● page-cursor                #18567 ↗
+  ● overlay-pagination-wiring  #18568 ↗  draft
+  ● anchored-episode-group     #18572 ↗  draft
+  ● anchored-series            #18577 ↗  draft
+  ● linear                     #18532 ↗  draft          ← red dot: CI failing
+```
+
+**How the tree is built.** A PR's base branch wins whenever a PR exists — that is what GitHub will actually merge into, and it survives rebases that break commit ancestry. Branches with no PR get a parent inferred from the commit graph (the nearest branch whose tip they already contain). PRs whose branch isn't checked out locally still appear, dimmed and marked `no worktree`: without them a chain like `#18579 → #18580 → #18581` would break in two the moment the middle worktree is removed.
+
+**Forks.** The mainline renders flat however deep it goes — an 8-PR stack indented 8 times leaves no room for a branch name. A branch that forks off the chain gets one level of indent under a `↳ branched off <parent>` label, which names the fork point instead of making you infer it. A fork inside a fork becomes a **N more branches below** button that opens that subtree on its own.
+
+**What the colours mean** (also listed under Legend in Settings):
+
+| | |
+|---|---|
+| Dot | **CI only** — green passing, yellow running, red failing, hollow = no PR |
+| Branch name | local working tree — normal clean, amber uncommitted changes, red merge conflict in progress |
+| ⚠ `conflicts` | the PR conflicts with its base branch |
+| 💬 + avatars | unresolved review threads, by author — round avatar is a person, square is a bot |
+| ✓ / ✗ seal | approved / changes requested |
+| `#18581 ↗` | click to open the PR in your browser |
+
+The comment indicator is deliberately quiet: four bots comment on every PR here, so it only appears for **unresolved review threads** (whoever opened them) or comments from a human other than you. A bare comment count lit up all 22 rows and said nothing.
+
+**Rows.** Hovering reveals copy-path, open-in-terminal, open-in-Android-Studio, and a **⋯** that opens the PR title, diff size, **Pull main** (disabled when already up to date), **Stack on** (new worktree branched off this one), and **Delete**. A `no worktree` row instead offers **+** to check that branch out.
+
+**Merged.** Branches with no commits outside `origin/main` are collected into a **Merged** section with a one-click **Prune** that removes the worktrees and branches, skipping any with uncommitted or unpushed work.
+
+### Refresh
+
+Git state is local and re-read every time the dropdown opens (~0.5s). PR data needs one `gh api graphql` query covering every open PR (~3s), so it is cached to disk and refreshed on a 30-minute poll; the header shows its age. The refresh button also runs `git fetch origin main`, which is what keeps merged-branch detection honest — a stale `origin/main` under-reports merges. Turn the poll off in Settings to fetch only on demand.
+
+Needs `gh` installed and logged in (`brew install gh && gh auth login`). Without it the view degrades to a plain git tree and says why in a footer bar.
+
+### Other
+
+- **New** / **Add Existing…** buttons in the footer open the create and add-existing flows (fixed `suraj/` prefix on create; both delegate to the shell scripts below).
 - **Delete** shows a confirmation with uncommitted/unpushed warnings first.
-  
-- The list refreshes each time the dropdown opens, plus a manual refresh button — no background polling, so the always-on app stays idle.
-  
-- Theme follows the system automatically. The gear menu has a **Start at Login** toggle and Quit.
-  
+- Theme follows the system automatically. Settings has a **Start at Login** toggle and Quit.
 
-Config constants (repo path, branch prefix, script locations) live in `macos/Sources/WorktreeManager/Models.swift`; rebuild after changing them.
+Config constants (repo path, branch prefix, trunk ref, poll interval, script locations) live in `macos/Sources/WorktreeManager/Models.swift`; rebuild after changing them.
+
+### Verifying without the GUI
+
+A menu bar dropdown can't be screenshotted without accessibility access, so the binary has debug hooks:
+
+```bash
+.build/release/WorktreeManager --stacks            # print the tree as the menu groups it
+.build/release/WorktreeManager --stacks-selftest   # same, on a synthetic branching stack
+.build/release/WorktreeManager --render out.png    # render the stack list to a PNG
+.build/release/WorktreeManager --render out.png --forks   # ...with a forked stack
+.build/release/WorktreeManager --list             # flat worktree list
+```
 ## Web app
 ```bash
 node server.js
@@ -46,7 +94,7 @@ Zero dependencies — just Node's built-in modules. Nothing to `npm install`. Id
   
 - **Pull latest** — rows that are behind `origin/main` get a pull button: it runs `git fetch origin main` then merges `origin/main` into the worktree's branch. If the merge conflicts, it's left in progress so you can resolve it in Android Studio (or `git merge --abort`), and the row shows a ⚠️ **merge conflict** pill until it's resolved.
   
-- **Rows** show a clean/dirty dot plus ahead/behind vs `origin/main`, and a ⚠️ warning if a merge conflict is unresolved. A 🎫 **ticket** pill appears when the branch matches a feature on the local-markdown issue tracker (`~/tmp/abema-androidtv-agents/scratch/<feature>/`); hover it for the path.
+- **Rows** show a clean/dirty dot plus ahead/behind vs `origin/main`, and a ⚠️ warning if a merge conflict is unresolved. A 🎫 **ticket** pill appears when the branch matches a feature on the local-markdown issue tracker (`~/tmp/abema-androidtv-agents/scratch/<feature>/`); hover it for the path. (Web app only — the menu bar app's row anatomy is described under [Stack view](#stack-view).)
   
 - **Theme** — dark by default; toggle in the header, choice remembered.
   

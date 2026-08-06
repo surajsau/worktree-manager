@@ -3,15 +3,18 @@ import SwiftUI
 enum Mode: Equatable {
     case list
     case create(base: String?) // nil => latest origin/main
-    case addExisting
+    case addExisting(branch: String?) // non-nil => prefilled from a ghost row
     case confirmDelete(Worktree)
+    // A subtree opened from a "N more branches below" button, so arbitrarily
+    // deep forks stay reachable without ever indenting past one level.
+    case subStack(ref: String)
 }
 
 struct MenuView: View {
     @EnvironmentObject var store: Store
     @State private var mode: Mode = .list
-    @State private var expandedPath: String? // accordion: at most one row expanded
-    @State private var collapsedFolders: Set<String> = []
+    @State private var expandedRef: String? // accordion: at most one row expanded
+    @State private var collapsedStacks: Set<String> = []
     @Environment(\.openSettings) private var openSettings
     @AppStorage(SettingsKeys.featureAddExisting) private var featureAddExisting = true
     @AppStorage(SettingsKeys.featureOpenInStudio) private var featureStudio = true
@@ -25,29 +28,46 @@ struct MenuView: View {
                 Divider()
                 BannerView(banner: banner) { store.banner = nil }
             }
+            if let error = store.prError, mode == .list {
+                Divider()
+                PRErrorBar(message: error)
+            }
             Divider()
             footer
         }
-        .frame(width: 380)
+        .frame(width: 420)
         .background(WindowClamp())
         .onAppear {
             store.banner = nil
             mode = .list
-            expandedPath = nil
-            Task { await store.refresh() }
+            expandedRef = nil
+            store.startPolling()
+            Task { await store.refreshOnOpen() }
         }
     }
 
     private var header: some View {
-        HStack {
-            Text("Worktrees")
+        HStack(spacing: 6) {
+            Text("Stacks")
                 .font(.headline)
-            if store.isLoading {
+            if store.isLoading || store.isLoadingPRs {
                 ProgressView()
                     .controlSize(.small)
                     .padding(.leading, 2)
             }
+            if store.attentionCount > 0 {
+                Text("\(store.attentionCount)")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(Color.orange))
+                    .help("\(store.attentionCount) item\(store.attentionCount == 1 ? "" : "s") need attention (CI failure, conflict, or unresolved review)")
+            }
             Spacer()
+            Text(freshness)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             if featureStudio {
                 AppIconButton(icon: AppIcons.studio, fallbackIcon: "hammer",
                               help: "Open main repo in Android Studio") {
@@ -55,99 +75,55 @@ struct MenuView: View {
                 }
             }
             Button {
-                Task { await store.refresh() }
+                Task { await store.refreshEverything() }
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
             .buttonStyle(HoverBackgroundButtonStyle())
-            .disabled(store.isLoading)
-            .help("Refresh")
+            .disabled(store.isLoading || store.isLoadingPRs)
+            .help("Fetch origin/main and re-read git + PR state")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+
+    // PR data is polled every 30 minutes, so the age of it matters more than
+    // with the purely local git state.
+    private var freshness: String {
+        guard let at = store.prFetchedAt else { return "PRs not fetched" }
+        let minutes = Int(Date().timeIntervalSince(at) / 60)
+        if minutes < 1 { return "PRs just now" }
+        if minutes < 60 { return "PRs \(minutes)m ago" }
+        return "PRs \(minutes / 60)h ago"
     }
 
     @ViewBuilder
     private var content: some View {
         switch mode {
         case .list:
-            listView
+            StackListView(
+                collapsedStacks: $collapsedStacks,
+                expandedRef: $expandedRef,
+                onBranchFrom: { mode = .create(base: $0.branch) },
+                onDelete: { mode = .confirmDelete($0) },
+                onAddWorktree: { mode = .addExisting(branch: $0) },
+                onDrillIn: { mode = .subStack(ref: $0.ref) }
+            )
         case .create(let base):
             CreateForm(base: base) { mode = .list }
-        case .addExisting:
-            AddExistingForm { mode = .list }
+        case .addExisting(let branch):
+            AddExistingForm(prefill: branch) { mode = .list }
         case .confirmDelete(let wt):
             ConfirmDeleteView(wt: wt) { mode = .list }
-        }
-    }
-
-    private var listView: some View {
-        Group {
-            if store.worktrees.isEmpty {
-                Text(store.hasLoadedOnce ? "No worktrees yet." : "Loading…")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 24)
-            } else if visibleRowCount <= 12 {
-                // Natural sizing: a ScrollView inside a MenuBarExtra window
-                // collapses to its minimum height, so avoid it when the list fits.
-                rows
-            } else {
-                ScrollView {
-                    rows
-                }
-                .frame(height: 12 * 44)
-            }
-        }
-    }
-
-    private var tree: FolderNode {
-        FolderNode.build(from: store.worktrees)
-    }
-
-    // Rows currently on screen (folders + non-hidden worktrees), so the
-    // scroll-vs-natural-sizing decision tracks what is actually visible.
-    private var visibleRowCount: Int {
-        tree.visibleRowCount(collapsed: collapsedFolders)
-    }
-
-    private var rows: some View {
-        VStack(spacing: 0) {
-            folderContents(of: tree, depth: 0)
-        }
-        .padding(.vertical, 4)
-    }
-
-    @ViewBuilder
-    private func folderContents(of node: FolderNode, depth: Int) -> some View {
-        ForEach(node.subfolders) { folder in
-            FolderRow(
-                name: folder.name,
-                depth: depth,
-                collapsed: collapsedFolders.contains(folder.path)
-            ) {
-                if collapsedFolders.contains(folder.path) {
-                    collapsedFolders.remove(folder.path)
-                } else {
-                    collapsedFolders.insert(folder.path)
-                }
-            }
-            if !collapsedFolders.contains(folder.path) {
-                AnyView(folderContents(of: folder, depth: depth + 1))
-            }
-        }
-        ForEach(node.worktrees) { wt in
-            WorktreeRow(
-                wt: wt,
-                displayName: wt.leafName,
-                indent: CGFloat(depth) * 14,
-                expanded: expandedPath == wt.path,
-                onToggleExpand: {
-                    // Expanding one row collapses whichever was open.
-                    expandedPath = expandedPath == wt.path ? nil : wt.path
-                },
-                onBranchFrom: { mode = .create(base: wt.branch) },
-                onDelete: { mode = .confirmDelete(wt) }
+        case .subStack(let ref):
+            SubStackView(
+                ref: ref,
+                expandedRef: $expandedRef,
+                onBack: { mode = .list },
+                onBranchFrom: { mode = .create(base: $0.branch) },
+                onDelete: { mode = .confirmDelete($0) },
+                onAddWorktree: { mode = .addExisting(branch: $0) },
+                onDrillIn: { mode = .subStack(ref: $0.ref) }
             )
         }
     }
@@ -163,7 +139,7 @@ struct MenuView: View {
             if featureAddExisting {
                 Button("Add Existing…") {
                     store.banner = nil
-                    mode = .addExisting
+                    mode = .addExisting(branch: nil)
                 }
             }
             Spacer()
@@ -184,243 +160,100 @@ struct MenuView: View {
     }
 }
 
-// MARK: - Folder tree
+// MARK: - Drilled-in subtree
 
-// Worktree names are branch paths (e.g. "xx/aa/bb"); every segment before the
-// last becomes a nested folder, the last is the worktree's leaf name.
-struct FolderNode: Identifiable {
-    let path: String // full segment path from the root, e.g. "xx/aa"
-    let name: String // last segment
-    var subfolders: [FolderNode] = []
-    var worktrees: [Worktree] = []
-
-    var id: String { path }
-
-    static func build(from worktrees: [Worktree]) -> FolderNode {
-        var root = FolderNode(path: "", name: "")
-        for wt in worktrees {
-            let segments = wt.name.split(separator: "/").map(String.init)
-            root.insert(wt, folders: segments.dropLast())
-        }
-        return root
-    }
-
-    private mutating func insert(_ wt: Worktree, folders: ArraySlice<String>) {
-        guard let first = folders.first else {
-            worktrees.append(wt)
-            return
-        }
-        let childPath = path.isEmpty ? first : path + "/" + first
-        if let i = subfolders.firstIndex(where: { $0.name == first }) {
-            subfolders[i].insert(wt, folders: folders.dropFirst())
-        } else {
-            var child = FolderNode(path: childPath, name: first)
-            child.insert(wt, folders: folders.dropFirst())
-            subfolders.append(child)
-        }
-    }
-
-    func visibleRowCount(collapsed: Set<String>) -> Int {
-        var count = worktrees.count
-        for folder in subfolders {
-            count += 1
-            if !collapsed.contains(folder.path) {
-                count += folder.visibleRowCount(collapsed: collapsed)
-            }
-        }
-        return count
-    }
-}
-
-extension Worktree {
-    var leafName: String {
-        name.split(separator: "/").last.map(String.init) ?? name
-    }
-}
-
-struct FolderRow: View {
-    let name: String
-    let depth: Int
-    let collapsed: Bool
-    let onToggle: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: onToggle) {
-            HStack(spacing: 6) {
-                Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 10)
-                Image(systemName: collapsed ? "folder" : "folder.fill")
-                    .foregroundStyle(.secondary)
-                Text(name)
-                    .fontWeight(.medium)
-                    .lineLimit(1)
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.leading, CGFloat(depth) * 14)
-            .padding(.vertical, 5)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .background(hovering ? Color.primary.opacity(0.06) : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .padding(.horizontal, 4)
-        .onHover { hovering = $0 }
-    }
-}
-
-// MARK: - Row
-
-struct WorktreeRow: View {
-    let wt: Worktree
-    var displayName: String? = nil
-    var indent: CGFloat = 0
-    let expanded: Bool
-    var onToggleExpand: () -> Void
-    var onBranchFrom: () -> Void
-    var onDelete: () -> Void
+struct SubStackView: View {
+    let ref: String
+    @Binding var expandedRef: String?
+    let onBack: () -> Void
+    let onBranchFrom: (Worktree) -> Void
+    let onDelete: (Worktree) -> Void
+    let onAddWorktree: (String) -> Void
+    let onDrillIn: (StackNode) -> Void
 
     @EnvironmentObject var store: Store
-    @State private var hovering = false
-    @AppStorage(SettingsKeys.featurePullLatest) private var featurePull = true
-    @AppStorage(SettingsKeys.featureBranchFrom) private var featureBranchFrom = true
-    @AppStorage(SettingsKeys.featureCopyPath) private var featureCopyPath = true
-    @AppStorage(SettingsKeys.featureOpenInTerminal) private var featureTerminal = true
-    @AppStorage(SettingsKeys.featureOpenInStudio) private var featureStudio = true
-    @AppStorage(SettingsKeys.terminalApp) private var terminalApp = "Terminal"
-
-    private var busy: Bool { store.busyPaths.contains(wt.path) }
 
     var body: some View {
-        VStack(spacing: 0) {
-            mainRow
-            if expanded {
-                actionRow
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: onBack) {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                        .font(.caption2.weight(.semibold))
+                    Text("All stacks")
+                        .font(.caption)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(Color.accentColor)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
             }
-        }
-        .background(hovering || expanded ? Color.primary.opacity(0.06) : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .padding(.horizontal, 4)
-        .onHover { hovering = $0 }
-    }
+            .buttonStyle(.plain)
 
-    private var mainRow: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(wt.conflicts ? Color.red : wt.dirty ? Color.orange : Color.green)
-                .frame(width: 8, height: 8)
-                .help(wt.conflicts ? "Merge conflict" : wt.dirty ? "Uncommitted changes" : "Clean")
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(displayName ?? wt.name)
-                    .fontWeight(.medium)
+            if let node = node {
+                Text(node.ref)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .help(wt.branch)
-                HStack(spacing: 8) {
-                    if wt.conflicts {
-                        Label("merge conflict", systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.red)
-                    }
-                    if wt.behind > 0 { Text("↓\(wt.behind)") }
-                    if wt.ahead > 0 { Text("↑\(wt.ahead)") }
-                    if wt.unpushed > 0 {
-                        Text("\(wt.unpushed) unpushed")
-                            .foregroundStyle(.orange)
-                    }
-                    if let ticket = wt.ticketPath {
-                        Label("ticket", systemImage: "ticket")
-                            .help("Tracker ticket: \(ticket)")
-                    }
-                    if !wt.conflicts && wt.behind == 0 && wt.ahead == 0 && wt.unpushed == 0 && !wt.dirty {
-                        Text("up to date")
-                    }
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 4)
+                ScrollView {
+                    ChainView(
+                        root: node,
+                        expandedRef: $expandedRef,
+                        onBranchFrom: onBranchFrom,
+                        onDelete: onDelete,
+                        onAddWorktree: onAddWorktree,
+                        onDrillIn: onDrillIn
+                    )
+                    .padding(.horizontal, 6)
+                    .padding(.bottom, 6)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 8)
-
-            if busy {
-                ProgressView()
-                    .controlSize(.small)
-            } else if hovering || expanded {
-                HStack(spacing: 2) {
-                    if featureCopyPath {
-                        RowButton(icon: "doc.on.doc", help: "Copy worktree path") {
-                            let pb = NSPasteboard.general
-                            pb.clearContents()
-                            pb.setString(wt.path, forType: .string)
-                            store.banner = Store.Banner(text: "Copied \(wt.path)", isError: false)
-                        }
-                    }
-                    if featureTerminal {
-                        AppIconButton(icon: AppIcons.terminal(named: terminalApp), fallbackIcon: "terminal",
-                                      help: terminalApp == TerminalApps.cmuxName
-                                          ? "Open cmux tab here (reuses one already at this folder)"
-                                          : "Open in \(terminalApp)") {
-                            Task { await store.openInTerminal(wt) }
-                        }
-                    }
-                    if featureStudio {
-                        AppIconButton(icon: AppIcons.studio, fallbackIcon: "hammer",
-                                      help: "Open in Android Studio") {
-                            Task { await store.open(wt) }
-                        }
-                    }
-                    RowButton(icon: expanded ? "chevron.up" : "chevron.down", help: "More actions") {
-                        onToggleExpand()
-                    }
-                }
+                .frame(height: min(CGFloat(node.subtreeCount) * 46 + 12, 11 * 46))
+            } else {
+                Text("That branch is no longer in the stack.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(12)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.leading, indent)
-        .padding(.vertical, 6)
-        .contentShape(Rectangle())
     }
 
-    // Expanded accordion section: the destructive / branch-changing actions.
-    private var actionRow: some View {
-        HStack(spacing: 8) {
-            if featurePull {
-                Button {
-                    Task { await store.pull(wt) }
-                } label: {
-                    Label("Pull main", systemImage: "arrow.down.circle")
-                }
-                .disabled(busy || wt.behind == 0 || wt.conflicts)
-                .help("Pull latest origin/main (merge)")
-            }
-            if featureBranchFrom {
-                Button {
-                    onBranchFrom()
-                } label: {
-                    Label("Branch from", systemImage: "arrow.triangle.branch")
-                }
-                .disabled(busy)
-                .help("New worktree based on this branch")
-            }
-            Spacer()
-            Button(role: .destructive) {
-                onDelete()
-            } label: {
-                Label("Delete", systemImage: "trash")
-                    .foregroundStyle(.red)
-            }
-            .disabled(busy)
-            .help("Delete worktree and branch")
+    private var node: StackNode? {
+        for stack in store.stacks {
+            if let found = Self.find(ref, in: stack.root) { return found }
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
+        return nil
+    }
+
+    private static func find(_ ref: String, in node: StackNode) -> StackNode? {
+        if node.ref == ref { return node }
+        for child in node.children {
+            if let found = find(ref, in: child) { return found }
+        }
+        return nil
+    }
+}
+
+// Shown instead of failing silently: without PR data the view degrades to a
+// plain git tree, and the reason (no gh, not logged in, offline) matters.
+struct PRErrorBar: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "wifi.slash")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+            Text("PR data unavailable — \(message)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
         .padding(.horizontal, 12)
-        .padding(.top, 2)
-        .padding(.bottom, 8)
+        .padding(.vertical, 5)
     }
 }
 
@@ -476,20 +309,6 @@ struct AppIconButton: View {
     }
 }
 
-struct RowButton: View {
-    let icon: String
-    let help: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .frame(width: 22, height: 20)
-        }
-        .buttonStyle(HoverBackgroundButtonStyle())
-        .help(help)
-    }
-}
 
 // MARK: - Create
 
@@ -760,8 +579,15 @@ private struct BranchRow: View {
 struct AddExistingForm: View {
     var onDone: () -> Void
 
+    // Prefilled when reached from a ghost row, so checking out a missing link
+    // in a stack is one click rather than retyping the branch.
+    init(prefill: String? = nil, onDone: @escaping () -> Void) {
+        self.onDone = onDone
+        _branch = State(initialValue: prefill ?? "")
+    }
+
     @EnvironmentObject var store: Store
-    @State private var branch = ""
+    @State private var branch: String
     @State private var submitting = false
     @State private var error: String?
     @FocusState private var focused: Bool

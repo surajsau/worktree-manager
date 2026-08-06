@@ -16,14 +16,122 @@ final class Store: ObservableObject {
     @Published var baseBranches: [String] = []
     @Published var isLoadingBranches = false
 
-    // No auto-polling — git state is computed on demand only (dropdown open,
-    // Refresh button, or after an action), to keep the always-on app idle.
+    @Published var pullRequests: [PullRequest] = []
+    @Published var prFetchedAt: Date?
+    @Published var isLoadingPRs = false
+    @Published var prError: String?
+
+    private var pollTask: Task<Void, Never>?
+
+    init() {
+        // Whatever the last fetch saw, so the first menu open already has PR
+        // numbers on the rows instead of a bare git tree.
+        if let snapshot = PRCache.load() {
+            pullRequests = snapshot.pullRequests
+            prFetchedAt = snapshot.fetchedAt
+        }
+        rebuildTree()
+    }
+
+    // MARK: - Derived tree
+
+    // Rebuilt only when its inputs change: SwiftUI reads this many times per
+    // layout pass, and building the tree walks every branch's commit set.
+    @Published private(set) var stacks: [Stack] = []
+    @Published private(set) var mergedWorktrees: [Worktree] = []
+
+    // Used only by the --render debug hook, to draw a tree shape that the real
+    // repo doesn't currently contain.
+    func injectForRender(worktrees: [Worktree], pullRequests: [PullRequest]) {
+        self.worktrees = worktrees
+        self.pullRequests = pullRequests
+        hasLoadedOnce = true
+        rebuildTree()
+    }
+
+    private func rebuildTree() {
+        let tree = StackBuilder.build(worktrees: worktrees, pullRequests: pullRequests)
+        stacks = tree.stacks
+        mergedWorktrees = tree.merged
+    }
+
+    var attentionCount: Int {
+        pullRequests.filter {
+            $0.ci == .failure || $0.mergeable == .conflicting || $0.unresolvedThreads > 0
+        }.count + worktrees.filter(\.conflicts).count
+    }
+
+    // MARK: - Refresh
+
+    // Git state only: local, ~0.5s, so it runs on every menu open.
     func refresh() async {
         if isLoading { return }
         isLoading = true
         worktrees = await GitService.listWorktrees()
+        rebuildTree()
         isLoading = false
         hasLoadedOnce = true
+    }
+
+    // Called when the menu opens: git always, PR data only when the cache has
+    // aged out, so reopening the menu inside the poll window costs nothing.
+    func refreshOnOpen() async {
+        await refresh()
+        let age = prFetchedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+        if age > Config.prPollInterval {
+            await refreshPullRequests()
+        }
+    }
+
+    // The explicit refresh button: fetches the trunk too, so merged-branch
+    // detection is measured against an up-to-date origin/main.
+    func refreshEverything() async {
+        await GitService.fetchTrunk()
+        async let git: Void = refresh()
+        async let prs: Void = refreshPullRequests()
+        _ = await (git, prs)
+    }
+
+    func refreshPullRequests() async {
+        if isLoadingPRs { return }
+        isLoadingPRs = true
+        switch await GitHubService.fetchPullRequests() {
+        case .success(let prs):
+            pullRequests = prs
+            prFetchedAt = Date()
+            prError = nil
+            rebuildTree()
+            PRCache.save(PRSnapshot(pullRequests: prs, fetchedAt: Date()))
+            for url in prs.flatMap({ $0.participants.map(\.avatarURL) }) {
+                AvatarCache.shared.load(url)
+            }
+        case .failure(let failure):
+            // Keep the cached PRs on screen — stale numbers beat none.
+            prError = failure.message
+        }
+        isLoadingPRs = false
+    }
+
+    // 30-minute poll. One GraphQL query per tick, so the cost is negligible
+    // next to GitHub's hourly quota; the app is otherwise idle.
+    func startPolling() {
+        guard pollTask == nil else { return }
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(Config.prPollInterval * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                // Re-read the setting each tick so turning the poll off in
+                // Settings takes effect without a relaunch.
+                guard Self.pollingEnabled else { continue }
+                await GitService.fetchTrunk()
+                await self?.refreshPullRequests()
+                await self?.refresh()
+            }
+        }
+    }
+
+    private static var pollingEnabled: Bool {
+        UserDefaults.standard.object(forKey: SettingsKeys.pollPullRequests) as? Bool ?? true
     }
 
     // Reads local refs only (no fetch), so it is cheap enough to redo whenever
@@ -61,6 +169,32 @@ final class Store: ObservableObject {
         await refresh()
     }
 
+    // Bulk-removes the branches already contained in the trunk. Every one of
+    // them is checked again here rather than trusted from the view's snapshot,
+    // because it is a destructive batch.
+    func pruneMerged(_ candidates: [Worktree]) async {
+        let safe = candidates.filter { $0.merged && !$0.dirty && $0.unpushed == 0 }
+        guard !safe.isEmpty else {
+            banner = Banner(text: "Nothing to prune.", isError: false)
+            return
+        }
+        for wt in safe { busyPaths.insert(wt.path) }
+        var removed: [String] = []
+        var failed: [String] = []
+        for wt in safe {
+            let outcome = await GitService.deleteWorktree(path: wt.path, branch: wt.branch)
+            if outcome.ok { removed.append(wt.branch) } else { failed.append(wt.branch) }
+            busyPaths.remove(wt.path)
+        }
+        let skipped = candidates.count - safe.count
+        var parts: [String] = []
+        if !removed.isEmpty { parts.append("Pruned \(removed.count) merged branch\(removed.count == 1 ? "" : "es").") }
+        if skipped > 0 { parts.append("\(skipped) skipped (uncommitted or unpushed work).") }
+        if !failed.isEmpty { parts.append("Failed: \(failed.joined(separator: ", "))") }
+        banner = Banner(text: parts.joined(separator: " "), isError: !failed.isEmpty)
+        await refresh()
+    }
+
     func pull(_ wt: Worktree) async {
         busyPaths.insert(wt.path)
         let outcome = await GitService.pullLatest(path: wt.path)
@@ -95,5 +229,4 @@ final class Store: ObservableObject {
             banner = Banner(text: outcome.message ?? "failed to open \(terminal)", isError: true)
         }
     }
-
 }

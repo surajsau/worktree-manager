@@ -12,6 +12,7 @@ enum SettingsKeys {
     static let featureOpenInTerminal = "feature.openInTerminal"
     static let featureOpenInStudio = "feature.openInStudio"
     static let featureAddExisting = "feature.addExisting"
+    static let pollPullRequests = "pr.poll"
 }
 
 enum TerminalApps {
@@ -50,6 +51,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKeys.featureOpenInTerminal) private var openInTerminal = true
     @AppStorage(SettingsKeys.featureOpenInStudio) private var openInStudio = true
     @AppStorage(SettingsKeys.featureAddExisting) private var addExisting = true
+    @AppStorage(SettingsKeys.pollPullRequests) private var pollPRs = true
 
     // Detected once per window; Terminal.app always exists as a fallback.
     private let installedTerminals = TerminalApps.installed()
@@ -84,6 +86,22 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section {
+                Toggle("Refresh PR data every 30 minutes", isOn: $pollPRs)
+            } header: {
+                Text("Pull Requests")
+            } footer: {
+                Text(pollPRs
+                     ? "One `gh api graphql` query per refresh, covering every open PR. Turn this off to fetch only when you press Refresh."
+                     : "PR data is fetched only when you press Refresh, or when the menu opens with data older than 30 minutes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                StackLegend()
+            } header: {
+                Text("Legend")
+            }
             Section("General") {
                 LoginItemToggle()
                 Button("Quit Worktree Manager") {
@@ -94,6 +112,80 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 400)
         .fixedSize()
+    }
+}
+
+// The stack rows carry two independent colour axes — CI on the dot, local
+// working-tree state on the branch name — which is only obvious once someone
+// tells you. This is that telling.
+struct StackLegend: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            row {
+                Circle().fill(Color.green).frame(width: 8, height: 8)
+                Circle().fill(StackStyle.ciPending).frame(width: 8, height: 8)
+                Circle().fill(Color.red).frame(width: 8, height: 8)
+                Circle().strokeBorder(Color.secondary.opacity(0.5), lineWidth: 1.2).frame(width: 8, height: 8)
+            } text: {
+                Text("Dot — CI only: passing, running, failing, no PR")
+            }
+            row {
+                Text("branch").foregroundStyle(.primary)
+                Text("branch").foregroundStyle(StackStyle.dirty)
+                Text("branch").foregroundStyle(.red)
+            } text: {
+                Text("Branch name — clean, uncommitted changes, merge conflict in progress")
+            }
+            row {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+            } text: {
+                Text("PR conflicts with its base branch")
+            }
+            row {
+                Image(systemName: "bubble.left.fill").foregroundStyle(.orange)
+                Circle().fill(Color.secondary.opacity(0.4)).frame(width: 10, height: 10)
+                RoundedRectangle(cornerRadius: 2).fill(Color.secondary.opacity(0.4)).frame(width: 10, height: 10)
+            } text: {
+                Text("Unresolved review threads, by author — round is a person, square is a bot")
+            }
+            row {
+                Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+                Image(systemName: "xmark.seal.fill").foregroundStyle(.orange)
+            } text: {
+                Text("Approved / changes requested")
+            }
+            row {
+                Image(systemName: "arrow.turn.down.right").foregroundStyle(.secondary)
+            } text: {
+                Text("A branch that forked off the stack rather than continuing it")
+            }
+            row {
+                Text("no worktree")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+                    .background(Capsule().fill(Color.primary.opacity(0.07)))
+            } text: {
+                Text("A PR in the stack that isn't checked out here")
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func row<Icon: View, Label: View>(
+        @ViewBuilder icon: () -> Icon,
+        @ViewBuilder text: () -> Label
+    ) -> some View {
+        HStack(alignment: .center, spacing: 6) {
+            HStack(spacing: 3) { icon() }
+                .font(.system(size: 10))
+                .frame(width: 52, alignment: .leading)
+            text()
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
     }
 }
 
