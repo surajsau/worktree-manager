@@ -79,3 +79,4 @@ fi
 
 echo "Created $branch"
 echo "path: $dest"
+"$SCRIPT_DIR/agent-artifacts.sh" "$branch"

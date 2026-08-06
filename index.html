@@ -317,6 +317,7 @@
               (ab.length ? '<span class="pill">' + ab.join(' · ') + '</span>' : '') +
               (w.unpushed ? '<span class="pill warn">' + w.unpushed + ' unpushed</span>' : '') +
               (w.conflicts ? '<span class="pill warn">⚠️ merge conflict</span>' : '') +
+              (w.ticket ? '<span class="pill" title="Tracker ticket: ' + esc(w.ticket) + '">🎫 ticket</span>' : '') +
             '</div>' +
           '</div>' +
           '<div class="actions">' +
@@ -473,11 +474,18 @@
       const bits = [w.dirty ? 'Has uncommitted changes' : 'Clean'];
       $('delState').textContent = bits.join(' · ');
       const warn = $('delWarn');
+      const msgs = [];
       if (w.unpushed || w.dirty) {
         const parts = [];
         if (w.unpushed) parts.push(w.unpushed + ' commit' + (w.unpushed === 1 ? '' : 's') + ' not pushed to any remote');
         if (w.dirty) parts.push('uncommitted changes');
-        warn.innerHTML = '⚠️ <div>This worktree has <strong>' + parts.join('</strong> and <strong>') + '</strong>. Deleting is permanent and cannot be undone.</div>';
+        msgs.push('This worktree has <strong>' + parts.join('</strong> and <strong>') + '</strong>. Deleting is permanent and cannot be undone.');
+      }
+      if (w.shipRun) {
+        msgs.push('Its ship run folder <code>' + esc(w.shipRun) + '</code> is left behind — prune it manually once the work is done. Tracker tickets are never touched.');
+      }
+      if (msgs.length) {
+        warn.innerHTML = '⚠️ <div>' + msgs.join('<br><br>') + '</div>';
         warn.style.display = 'flex';
       } else {
         warn.style.display = 'none';

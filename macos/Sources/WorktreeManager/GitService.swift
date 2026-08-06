@@ -107,6 +107,7 @@ enum GitService {
             : 0
 
         let branchName = branch ?? "(detached)"
+        let artifacts = agentArtifacts(branch: branch)
         return Worktree(
             branch: branchName,
             name: branch.map { $0.hasPrefix(Config.branchPrefix) ? String($0.dropFirst(Config.branchPrefix.count)) : $0 } ?? branchName,
@@ -116,8 +117,32 @@ enum GitService {
             conflicts: conflicts,
             ahead: ahead,
             behind: behind,
-            unpushed: unpushed
+            unpushed: unpushed,
+            ticketPath: artifacts.ticket,
+            shipRunPath: artifacts.shipRun
         )
+    }
+
+    // A branch's agent artifacts: the tracker feature dir and the ship run dir,
+    // matched against the branch's path segments, last first (mirrors
+    // agent-artifacts.sh, which serves the shell scripts).
+    private static func agentArtifacts(branch: String?) -> (ticket: String?, shipRun: String?) {
+        guard let branch else { return (nil, nil) }
+        let fm = FileManager.default
+        var ticket: String?
+        var shipRun: String?
+        for seg in branch.split(separator: "/").map(String.init).reversed() {
+            var isDir: ObjCBool = false
+            if ticket == nil {
+                let p = Config.trackerScratchDir + "/" + seg
+                if fm.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue { ticket = p }
+            }
+            if shipRun == nil {
+                let p = Config.shipRunsDir + "/" + seg
+                if fm.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue { shipRun = p }
+            }
+        }
+        return (ticket, shipRun)
     }
 
     private static func determinBaseRef(branch: String?, cwd: String) async -> String {
@@ -131,6 +156,36 @@ enum GitService {
             return "origin/\(branch)"
         }
         return "origin/main"
+    }
+
+    // MARK: - Base branches
+
+    // Start-point candidates for a new worktree: origin's remote-tracking
+    // branches (as of the last fetch) plus every local branch, with
+    // origin/main pinned first. Remote refs come before locals because that's
+    // what a new worktree usually branches off.
+    static func listBaseBranches() async -> [String] {
+        async let remotesRes = git(["for-each-ref", "--format=%(refname)", "refs/remotes/origin"])
+        async let localsRes = git(["for-each-ref", "--format=%(refname)", "refs/heads"])
+        let (remotes, locals) = await (remotesRes, localsRes)
+
+        let remoteNames = refNames(remotes, stripping: "refs/remotes/")
+        let ordered = (remoteNames.contains(Config.defaultBase) ? [Config.defaultBase] : [])
+            + remoteNames
+            + refNames(locals, stripping: "refs/heads/")
+        var seen = Set<String>()
+        return ordered.filter { seen.insert($0).inserted }
+    }
+
+    private static func refNames(_ res: CommandResult, stripping prefix: String) -> [String] {
+        res.stdout
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            // origin/HEAD is a symref alias for the default branch, not a branch
+            // (and %(refname:short) would render it as a bare "origin").
+            .filter { !$0.isEmpty && $0 != "refs/remotes/origin/HEAD" }
+            .map { $0.hasPrefix(prefix) ? String($0.dropFirst(prefix.count)) : $0 }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     // MARK: - Create / add existing (delegates to the shell scripts)

@@ -17,6 +17,11 @@ const BRANCH_PREFIX = 'suraj/';
 // from a Claude skill or any shell. The server just shells out to it.
 const CREATE_SCRIPT = path.join(__dirname, 'create-worktree.sh');
 const ADD_EXISTING_SCRIPT = path.join(__dirname, 'add-existing-worktree.sh');
+// Agent-system artifacts: the local-markdown issue tracker and ship-skill runs.
+// Rows surface these; delete never touches them (tracker tickets are records,
+// ship runs get a leave-behind warning in the UI).
+const TRACKER_SCRATCH = '/Users/s24270/tmp/abema-androidtv-agents/scratch';
+const SHIP_RUNS = '/Users/s24270/tmp/ship';
 const INDEX_HTML = path.join(__dirname, 'index.html');
 const FAVICON = path.join(__dirname, 'favicon.svg');
 
@@ -117,9 +122,25 @@ async function listWorktrees() {
         ahead,
         behind,
         unpushed,
+        ...agentArtifacts(e.branch),
       };
     })
   );
+}
+
+// A branch's agent artifacts: the tracker feature dir and the ship run dir,
+// matched against the branch's path segments, last first (mirrors
+// agent-artifacts.sh, which serves the shell scripts).
+function agentArtifacts(branch) {
+  const out = { ticket: null, shipRun: null };
+  if (!branch) return out;
+  for (const seg of branch.split('/').filter(Boolean).reverse()) {
+    const ticketDir = path.join(TRACKER_SCRATCH, seg);
+    const shipDir = path.join(SHIP_RUNS, seg);
+    if (!out.ticket && fs.existsSync(ticketDir)) out.ticket = ticketDir;
+    if (!out.shipRun && fs.existsSync(shipDir)) out.shipRun = shipDir;
+  }
+  return out;
 }
 
 // Determine the base ref for ahead/behind comparison. If origin/<branch> exists,

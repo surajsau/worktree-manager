@@ -4,6 +4,7 @@ enum Config {
     static let mainRepo = "/Users/s24270/Documents/Github/abema-androidtv"
     static let worktreeDir = "/Users/s24270/Documents/Github/worktrees"
     static let branchPrefix = "suraj/"
+    static let defaultBase = "origin/main"
     // The create/add logic lives in standalone shell scripts (shared with the
     // web server and Claude skills) — the app shells out to them.
     static let scriptsDir = "/Users/s24270/Documents/Github/worktree-manager"
@@ -11,6 +12,10 @@ enum Config {
     static var addExistingScript: String { scriptsDir + "/add-existing-worktree.sh" }
     static let studioApp = "Android Studio"
     static let cmuxBundleID = "com.cmuxterm.app"
+    // Agent-system artifacts: the local-markdown issue tracker and ship-skill
+    // runs. Rows surface these; delete never touches them.
+    static let trackerScratchDir = NSHomeDirectory() + "/tmp/abema-androidtv-agents/scratch"
+    static let shipRunsDir = NSHomeDirectory() + "/tmp/ship"
 }
 
 struct Worktree: Identifiable, Equatable, Sendable {
@@ -23,6 +28,8 @@ struct Worktree: Identifiable, Equatable, Sendable {
     let ahead: Int
     let behind: Int
     let unpushed: Int
+    let ticketPath: String?
+    let shipRunPath: String?
 
     var id: String { path }
 }

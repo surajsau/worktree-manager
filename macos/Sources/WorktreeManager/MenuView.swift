@@ -14,6 +14,7 @@ struct MenuView: View {
     @State private var collapsedFolders: Set<String> = []
     @Environment(\.openSettings) private var openSettings
     @AppStorage(SettingsKeys.featureAddExisting) private var featureAddExisting = true
+    @AppStorage(SettingsKeys.featureOpenInStudio) private var featureStudio = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,6 +48,12 @@ struct MenuView: View {
                     .padding(.leading, 2)
             }
             Spacer()
+            if featureStudio {
+                AppIconButton(icon: AppIcons.studio, fallbackIcon: "hammer",
+                              help: "Open main repo in Android Studio") {
+                    Task { await store.openMainRepo() }
+                }
+            }
             Button {
                 Task { await store.refresh() }
             } label: {
@@ -325,6 +332,10 @@ struct WorktreeRow: View {
                         Text("\(wt.unpushed) unpushed")
                             .foregroundStyle(.orange)
                     }
+                    if let ticket = wt.ticketPath {
+                        Label("ticket", systemImage: "ticket")
+                            .help("Tracker ticket: \(ticket)")
+                    }
                     if !wt.conflicts && wt.behind == 0 && wt.ahead == 0 && wt.unpushed == 0 && !wt.dirty {
                         Text("up to date")
                     }
@@ -483,11 +494,19 @@ struct RowButton: View {
 // MARK: - Create
 
 struct CreateForm: View {
-    let base: String? // nil => latest origin/main
+    let initialBase: String? // nil => Config.defaultBase
     var onDone: () -> Void
+
+    init(base: String?, onDone: @escaping () -> Void) {
+        self.initialBase = base
+        self.onDone = onDone
+        _base = State(initialValue: base ?? Config.defaultBase)
+    }
 
     @EnvironmentObject var store: Store
     @State private var name = ""
+    @State private var base: String
+    @State private var pickingBase = false
     @State private var submitting = false
     @State private var error: String?
     @FocusState private var focused: Bool
@@ -508,7 +527,18 @@ struct CreateForm: View {
             }
             .padding(.vertical, 5)
             .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
-            Text(base.map { "Based on \($0) (local tip, no fetch)" } ?? "Based on the latest origin/main (fetched)")
+
+            BasePicker(
+                base: $base,
+                expanded: $pickingBase,
+                branches: store.baseBranches,
+                loading: store.isLoadingBranches
+            )
+            .disabled(submitting)
+
+            Text(base.hasPrefix("origin/")
+                ? "Based on the latest \(base) (fetched)"
+                : "Based on \(base) (local tip, no fetch)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if let error {
@@ -519,7 +549,8 @@ struct CreateForm: View {
                 Button("Cancel") { onDone() }
                     .disabled(submitting)
                 Button(submitting ? "Creating…" : "Create") { submit() }
-                    .keyboardShortcut(.defaultAction)
+                    // While the branch search is open, Return belongs to it.
+                    .keyboardShortcut(pickingBase ? nil : .defaultAction)
                     .disabled(submitting || trimmedName.isEmpty)
             }
         }
@@ -529,13 +560,14 @@ struct CreateForm: View {
                 name = folders
             }
             focused = true
+            Task { await store.loadBaseBranches() }
         }
     }
 
     // Folder portion of the base branch (prefix stripped, last segment dropped),
     // pre-filled so worktrees created from a foldered branch land in the same folder.
     private var baseFolders: String? {
-        guard var base else { return nil }
+        guard var base = initialBase else { return nil }
         if base.hasPrefix(Config.branchPrefix) {
             base = String(base.dropFirst(Config.branchPrefix.count))
         }
@@ -560,6 +592,166 @@ struct CreateForm: View {
                 error = outcome.message ?? "create failed"
             }
         }
+    }
+}
+
+// Base-ref chooser. The repo has ~1000 remote branches, so this is a search box
+// over the branch list rather than a Picker menu. Free text is accepted too, so
+// an origin branch that hasn't been fetched yet can still be used as the base.
+struct BasePicker: View {
+    @Binding var base: String
+    @Binding var expanded: Bool
+    let branches: [String]
+    let loading: Bool
+
+    @State private var query = ""
+    @FocusState private var searchFocused: Bool
+
+    private static let visibleRows = 7
+    private static let rowHeight: CGFloat = 21
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Base")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button {
+                    if expanded {
+                        expanded = false
+                    } else {
+                        query = ""
+                        expanded = true
+                        searchFocused = true
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(base)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.caption2)
+                    }
+                }
+                .controlSize(.small)
+                .help("Choose the branch to create this worktree from")
+                Spacer(minLength: 0)
+            }
+
+            if expanded {
+                TextField("filter branches…", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                    .focused($searchFocused)
+                    .onSubmit {
+                        if let first = candidates.first { choose(first) }
+                    }
+                results
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var results: some View {
+        let items = candidates
+        if items.isEmpty {
+            Text(loading ? "Loading branches…" : "No branches found.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if items.count <= Self.visibleRows {
+            rows(items)
+        } else {
+            ScrollView {
+                rows(items)
+            }
+            .frame(height: CGFloat(Self.visibleRows) * Self.rowHeight)
+        }
+    }
+
+    private func rows(_ items: [String]) -> some View {
+        LazyVStack(spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.element) { index, branch in
+                BranchRow(
+                    name: branch,
+                    selected: branch == base,
+                    isReturnTarget: index == 0,
+                    asTyped: branch == trimmedQuery && !branches.contains(branch)
+                ) {
+                    choose(branch)
+                }
+            }
+        }
+    }
+
+    private func choose(_ branch: String) {
+        base = branch
+        expanded = false
+        query = ""
+    }
+
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // Matches ranked so the most literal one wins the Return key. A query that
+    // matches nothing (or nothing exactly) is offered as-is at the end.
+    private var candidates: [String] {
+        let q = trimmedQuery.lowercased()
+        guard !q.isEmpty else { return Array(branches.prefix(400)) }
+        let ranked = branches
+            .filter { $0.lowercased().contains(q) }
+            .map { (rank: rank($0, query: q), name: $0) }
+            .sorted { ($0.rank, $0.name) < ($1.rank, $1.name) }
+            .map(\.name)
+            .prefix(400)
+        let exact = ranked.contains { $0.lowercased() == q }
+        return exact ? Array(ranked) : Array(ranked) + [trimmedQuery]
+    }
+
+    private func rank(_ branch: String, query: String) -> Int {
+        let lower = branch.lowercased()
+        let short = lower.hasPrefix("origin/") ? String(lower.dropFirst("origin/".count)) : lower
+        if lower == query || short == query { return 0 }
+        if short.hasPrefix(query) { return 1 }
+        if lower.hasPrefix(query) { return 2 }
+        return 3
+    }
+}
+
+private struct BranchRow: View {
+    let name: String
+    let selected: Bool
+    let isReturnTarget: Bool
+    let asTyped: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                    .font(.caption2)
+                    .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                Text(asTyped ? "Use “\(name)” as typed" : name)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                if isReturnTarget {
+                    Image(systemName: "return")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(hovering ? Color.primary.opacity(0.08) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .onHover { hovering = $0 }
     }
 }
 
@@ -648,6 +840,12 @@ struct ConfirmDeleteView: View {
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.red)
+            }
+            if let shipRun = wt.shipRunPath {
+                Label("Ship run folder \(shipRun) is left behind — prune it manually once the work is done.",
+                      systemImage: "shippingbox")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             HStack {
                 Spacer()

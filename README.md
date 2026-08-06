@@ -42,11 +42,11 @@ Zero dependencies — just Node's built-in modules. Nothing to `npm install`. Id
   
 - **Open** — launches the worktree in Android Studio (`open -a "Android Studio"`).
   
-- **Delete** — removes the worktree folder **and** deletes the branch. Warns first if the branch has uncommitted changes or unpushed commits.
+- **Delete** — removes the worktree folder **and** deletes the branch. Warns first if the branch has uncommitted changes or unpushed commits, and if a ship run folder (`~/tmp/ship/<slug>`) exists for the branch — that folder is left behind to prune manually; tracker tickets are never touched.
   
 - **Pull latest** — rows that are behind `origin/main` get a pull button: it runs `git fetch origin main` then merges `origin/main` into the worktree's branch. If the merge conflicts, it's left in progress so you can resolve it in Android Studio (or `git merge --abort`), and the row shows a ⚠️ **merge conflict** pill until it's resolved.
   
-- **Rows** show a clean/dirty dot plus ahead/behind vs `origin/main`, and a ⚠️ warning if a merge conflict is unresolved.
+- **Rows** show a clean/dirty dot plus ahead/behind vs `origin/main`, and a ⚠️ warning if a merge conflict is unresolved. A 🎫 **ticket** pill appears when the branch matches a feature on the local-markdown issue tracker (`~/tmp/abema-androidtv-agents/scratch/<feature>/`); hover it for the path.
   
 - **Theme** — dark by default; toggle in the header, choice remembered.
   
@@ -59,6 +59,8 @@ The create logic lives in a standalone shell script — the web server just shel
 ```
 
 This creates branch `suraj/my-feature` off the latest `origin/main` in `~/Documents/Github/worktrees/suraj+my-feature` and copies the files listed in `copy-on-create.txt`. An optional second argument sets the base ref (`git fetch` runs only when it's an `origin/...` ref). It exits `0` on success and non-zero on failure (with an error on stderr), so it's easy to call from a Claude skill or any automation.
+
+Both scripts end by running `agent-artifacts.sh <branch>`, which prints the agent-system artifacts tied to the branch when they exist — `tracker:` (+ `spec:`) for a matching feature on the local-markdown issue tracker, and `ship-run:` for a ship skill run directory. Branch segments are matched last-first (`suraj/fixed-focus/tab-frame` checks `tab-frame`, then `fixed-focus`). A Claude session creating a worktree from these scripts sees the ticket path in the output and can pick the spec up directly.
 
 To add a worktree for a branch that **already exists** instead, use its sibling:
 

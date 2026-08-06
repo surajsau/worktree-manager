@@ -13,6 +13,8 @@ final class Store: ObservableObject {
     @Published var hasLoadedOnce = false
     @Published var banner: Banner?
     @Published var busyPaths: Set<String> = []
+    @Published var baseBranches: [String] = []
+    @Published var isLoadingBranches = false
 
     // No auto-polling — git state is computed on demand only (dropdown open,
     // Refresh button, or after an action), to keep the always-on app idle.
@@ -22,6 +24,15 @@ final class Store: ObservableObject {
         worktrees = await GitService.listWorktrees()
         isLoading = false
         hasLoadedOnce = true
+    }
+
+    // Reads local refs only (no fetch), so it is cheap enough to redo whenever
+    // the create form opens. Previous values stay on screen while it reloads.
+    func loadBaseBranches() async {
+        if isLoadingBranches { return }
+        isLoadingBranches = true
+        baseBranches = await GitService.listBaseBranches()
+        isLoadingBranches = false
     }
 
     func create(name: String, base: String?) async -> OpOutcome {
@@ -59,7 +70,15 @@ final class Store: ObservableObject {
     }
 
     func open(_ wt: Worktree) async {
-        let outcome = await GitService.open(path: wt.path, app: Config.studioApp)
+        await openInStudio(path: wt.path)
+    }
+
+    func openMainRepo() async {
+        await openInStudio(path: Config.mainRepo)
+    }
+
+    private func openInStudio(path: String) async {
+        let outcome = await GitService.open(path: path, app: Config.studioApp)
         if !outcome.ok {
             banner = Banner(text: outcome.message ?? "failed to open", isError: true)
         }
