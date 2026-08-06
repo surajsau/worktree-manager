@@ -16,3 +16,6 @@ yarn-error.log*
 *.log
 .env
 .env.local
+
+# Agent issue tracker (see docs/agents/issue-tracker.md) — local to each clone
+.scratch/
