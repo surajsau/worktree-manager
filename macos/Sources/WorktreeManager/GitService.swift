@@ -395,6 +395,71 @@ enum GitService {
         return OpOutcome(ok: true)
     }
 
+    // MARK: - Resolve conflicts in cmux
+
+    static var cmuxAvailable: Bool { cmuxCLI != nil }
+
+    // Hands a conflicted worktree to an agent: a new cmux workspace at the
+    // worktree, running `command`. Always a fresh workspace rather than the
+    // focus-or-reuse of openInCmux — an existing tab here may be mid-task, and
+    // typing into it would land in whatever is already running.
+    static func resolveConflicts(path: String, command: String) async -> OpOutcome {
+        guard path.hasPrefix(Config.worktreeDir + "/") else {
+            return OpOutcome(ok: false, message: "refusing to open: path is not a managed worktree")
+        }
+        guard FileManager.default.fileExists(atPath: path) else {
+            return OpOutcome(ok: false, message: "worktree folder no longer exists")
+        }
+        guard let cli = cmuxCLI else {
+            return OpOutcome(ok: false, message: "cmux.app not found")
+        }
+
+        let args = [
+            "workspace", "create",
+            "--name", "resolve: " + (path as NSString).lastPathComponent,
+            "--cwd", path,
+            "--command", command,
+            "--focus", "true",
+        ]
+        var res = await run(cli, args)
+        if res.code != 0, await launchCmuxAndWait(cli: cli) {
+            res = await run(cli, args)
+        }
+        if res.code != 0 {
+            let msg = firstNonEmpty(res.stderr, res.stdout) ?? "failed to open cmux tab"
+            return OpOutcome(ok: false, message: msg.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        // `--focus true` selects the tab while cmux is still in the background,
+        // and activating the app afterwards can restore whatever tab was
+        // selected before — which looks exactly like nothing happened. Select
+        // again once cmux is frontmost so the new tab is what you land on.
+        _ = await run("/usr/bin/open", ["-b", Config.cmuxBundleID])
+        guard let ref = cmuxRef(fromCreateOutput: res.stdout) else {
+            return OpOutcome(ok: true, message: "Running \(command) in cmux")
+        }
+        _ = await run(cli, ["workspace", "select", ref])
+        return OpOutcome(ok: true, message: "Running \(command) in cmux — tab “resolve: \((path as NSString).lastPathComponent)”")
+    }
+
+    // `workspace create` prints "OK workspace:<n>" on success.
+    private static func cmuxRef(fromCreateOutput out: String) -> String? {
+        out.split(whereSeparator: \.isWhitespace)
+            .first { $0.hasPrefix("workspace:") }
+            .map(String.init)
+    }
+
+    // The CLI only talks to a running app, so a cold cmux has to be started and
+    // waited for before a workspace can be created in it.
+    private static func launchCmuxAndWait(cli: String) async -> Bool {
+        _ = await run("/usr/bin/open", ["-b", Config.cmuxBundleID])
+        for _ in 0..<20 {
+            if await run(cli, ["ping"]).code == 0 { return true }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        return false
+    }
+
     private static let cmuxCLI: String? = {
         let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Config.cmuxBundleID)
             ?? URL(fileURLWithPath: "/Applications/cmux.app")

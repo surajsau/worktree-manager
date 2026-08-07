@@ -25,6 +25,9 @@ enum Config {
     static var addExistingScript: String { scriptsDir + "/add-existing-worktree.sh" }
     static let studioApp = "Android Studio"
     static let cmuxBundleID = "com.cmuxterm.app"
+    // Typed into a fresh cmux workspace at the conflicted worktree. cmux runs it
+    // through an interactive login shell, so shell aliases (`opus`) resolve.
+    static let resolveConflictsCommand = "opus /resolve-conflicts"
     // Agent-system artifacts: the local-markdown issue tracker and ship-skill
     // runs. Rows surface these; delete never touches them.
     static let trackerScratchDir = NSHomeDirectory() + "/tmp/abema-androidtv-agents/scratch"

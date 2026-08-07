@@ -12,6 +12,7 @@ enum SettingsKeys {
     static let featureOpenInTerminal = "feature.openInTerminal"
     static let featureOpenInStudio = "feature.openInStudio"
     static let featureAddExisting = "feature.addExisting"
+    static let featureResolveConflicts = "feature.resolveConflicts"
     static let pollPullRequests = "pr.poll"
 }
 
@@ -51,6 +52,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKeys.featureOpenInTerminal) private var openInTerminal = true
     @AppStorage(SettingsKeys.featureOpenInStudio) private var openInStudio = true
     @AppStorage(SettingsKeys.featureAddExisting) private var addExisting = true
+    @AppStorage(SettingsKeys.featureResolveConflicts) private var resolveConflicts = true
     @AppStorage(SettingsKeys.pollPullRequests) private var pollPRs = true
 
     // Detected once per window; Terminal.app always exists as a fallback.
@@ -79,12 +81,19 @@ struct SettingsView: View {
                 Toggle("Open in Terminal", isOn: $openInTerminal)
                 Toggle("Open in Android Studio", isOn: $openInStudio)
                 Toggle("Add existing branch", isOn: $addExisting)
+                Toggle("Resolve merge conflict in cmux", isOn: $resolveConflicts)
             } header: {
                 Text("Features")
             } footer: {
-                Text("Disabled features are hidden from the worktree list.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Disabled features are hidden from the worktree list.")
+                    if resolveConflicts {
+                        Text("Rows whose PR conflicts with its base, or whose worktree has a merge half-done, get a `resolve` chip that opens a cmux tab there running `\(Config.resolveConflictsCommand)`."
+                             + (GitService.cmuxAvailable ? "" : " cmux.app isn’t installed, so the chip stays hidden."))
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             Section {
                 Toggle("Refresh PR data every 30 minutes", isOn: $pollPRs)
@@ -142,17 +151,34 @@ struct StackLegend: View {
                 Text("PR conflicts with its base branch")
             }
             row {
-                Image(systemName: "bubble.left.fill").foregroundStyle(.orange)
+                ResolveConflictButton {}
+                    .allowsHitTesting(false)
+            } text: {
+                Text("Hand the conflict to an agent in cmux — shown next to either conflict signal above")
+            }
+            row {
                 Circle().fill(Color.secondary.opacity(0.4)).frame(width: 10, height: 10)
                 RoundedRectangle(cornerRadius: 2).fill(Color.secondary.opacity(0.4)).frame(width: 10, height: 10)
+                Text("2").font(Typo.metaEmphasis).foregroundStyle(StackStyle.attention)
             } text: {
                 Text("Unresolved review threads, by author — round is a person, square is a bot")
             }
             row {
+                Image(systemName: "bubble.left").foregroundStyle(.tertiary)
+            } text: {
+                Text("A comment from a human other than you, with nothing unresolved")
+            }
+            row {
                 Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
-                Image(systemName: "xmark.seal.fill").foregroundStyle(.orange)
+                Image(systemName: "xmark.seal.fill").foregroundStyle(StackStyle.attention)
             } text: {
                 Text("Approved / changes requested")
+            }
+            row {
+                Text("3●").foregroundStyle(StackStyle.dirty)
+                Text("↑1").foregroundStyle(StackStyle.dirty)
+            } text: {
+                Text("Uncommitted changes / commits not pushed anywhere")
             }
             row {
                 Image(systemName: "arrow.turn.down.right").foregroundStyle(.secondary)
@@ -160,11 +186,9 @@ struct StackLegend: View {
                 Text("A branch that forked off the stack rather than continuing it")
             }
             row {
-                Text("no worktree")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 4)
-                    .background(Capsule().fill(Color.primary.opacity(0.07)))
+                Text("No worktree")
+                    .font(Typo.meta)
+                    .foregroundStyle(.tertiary)
             } text: {
                 Text("A PR in the stack that isn't checked out here")
             }

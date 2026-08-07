@@ -1,32 +1,8 @@
 import AppKit
 import SwiftUI
 
-// Colour vocabulary for the whole stack view, in one place so the legend in
-// Settings can't drift from what the rows actually draw.
-enum StackStyle {
-    static let rail = Color.primary.opacity(0.18)
-    static let dirty = Color(red: 0.85, green: 0.62, blue: 0.10)
-    static let ciPending = Color(red: 0.90, green: 0.75, blue: 0.20)
-
-    // The dot carries CI state and nothing else, so a red dot always means the
-    // build is broken — merge conflicts get their own chip instead.
-    static func ciColor(_ state: CIState) -> Color {
-        switch state {
-        case .success: return .green
-        case .failure: return .red
-        case .pending: return ciPending
-        case .none: return Color.secondary.opacity(0.5)
-        }
-    }
-
-    // Local working-tree state rides on the branch name's colour.
-    static func nameColor(_ wt: Worktree?) -> Color {
-        guard let wt else { return .secondary }
-        if wt.conflicts { return .red }
-        if wt.dirty { return dirty }
-        return .primary
-    }
-}
+// The stack list. Tokens (sizes, insets, colours) live in DesignSystem.swift;
+// the rules behind them are in DESIGN.md.
 
 // MARK: - List
 
@@ -41,30 +17,31 @@ struct StackListView: View {
 
     var body: some View {
         if store.stacks.isEmpty && store.mergedWorktrees.isEmpty {
-            Text(store.hasLoadedOnce ? "No worktrees yet." : "Loading…")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 24)
-        } else if estimatedRows <= 11 {
+            EmptyStateView(loaded: store.hasLoadedOnce)
+        } else if estimatedHeight <= Metrics.maxListHeight {
             // A ScrollView inside a MenuBarExtra window collapses to its
             // minimum height, so it is only used once the list needs it.
             content
         } else {
             ScrollView { content }
-                .frame(height: 11 * 46)
+                .frame(height: Metrics.maxListHeight)
         }
     }
 
-    private var estimatedRows: Int {
-        store.stacks.reduce(0) { total, stack in
-            total + 1 + (collapsedStacks.contains(stack.id) ? 0 : stack.nodeCount)
-        } + (store.mergedWorktrees.isEmpty ? 0 : 1)
+    private var estimatedHeight: CGFloat {
+        let sections = store.stacks.reduce(CGFloat(0)) { total, stack in
+            let rows = collapsedStacks.contains(stack.id) ? 0 : stack.nodeCount
+            return total + 22 + CGFloat(rows) * Metrics.rowHeight + (rows == 0 ? 0 : 6)
+        }
+        let merged = store.mergedWorktrees.isEmpty ? 0 : CGFloat(22)
+        let gaps = CGFloat(max(0, store.stacks.count)) * Metrics.sectionGap
+        return sections + merged + gaps + 16
     }
 
     private var content: some View {
-        VStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: Metrics.sectionGap) {
             ForEach(store.stacks) { stack in
-                StackCard(
+                StackSection(
                     stack: stack,
                     collapsed: collapsedStacks.contains(stack.id),
                     onToggle: {
@@ -85,14 +62,40 @@ struct StackListView: View {
                 MergedSection(worktrees: store.mergedWorktrees)
             }
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 6)
+        .padding(.horizontal, Metrics.gutter)
+        .padding(.vertical, 8)
     }
 }
 
-// MARK: - Stack card
+struct EmptyStateView: View {
+    let loaded: Bool
 
-struct StackCard: View {
+    var body: some View {
+        VStack(spacing: 6) {
+            if loaded {
+                Image(systemName: "tray")
+                    .font(.system(size: 22, weight: .light))
+                    .foregroundStyle(.tertiary)
+                Text("No worktrees")
+                    .font(Typo.sectionTitle)
+                Text("Create one with New below.")
+                    .font(Typo.meta)
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 34)
+    }
+}
+
+// MARK: - Stack section
+
+// A stack is a section, not a card: the title sits on the panel and only the
+// rows get a container. One less box than a bordered card, and it matches how
+// macOS groups a list under a heading.
+struct StackSection: View {
     let stack: Stack
     let collapsed: Bool
     let onToggle: () -> Void
@@ -103,7 +106,7 @@ struct StackCard: View {
     let onDrillIn: (StackNode) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 3) {
             header
             if !collapsed {
                 ChainView(
@@ -114,17 +117,9 @@ struct StackCard: View {
                     onAddWorktree: onAddWorktree,
                     onDrillIn: onDrillIn
                 )
-                .padding(.bottom, 4)
+                .stackGroup()
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.primary.opacity(0.035))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-        )
     }
 
     // Measured at the bottom of the stack, which is the only branch that
@@ -140,57 +135,33 @@ struct StackCard: View {
     // merges first — with its leaf kept alongside so the exact branch is still
     // readable when the folder alone is ambiguous.
     private var header: some View {
-        Button(action: onToggle) {
-            HStack(spacing: 5) {
-                Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 9)
-                Image(systemName: "square.stack.3d.up")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                Text(stack.title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if stack.title != stack.root.leaf {
-                    Text(stack.root.leaf)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 0.5)
-                        .background(Capsule().fill(Color.primary.opacity(0.07)))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Spacer(minLength: 4)
+        SectionHeader(
+            title: stack.title,
+            subtitle: stack.title == stack.root.leaf ? nil : stack.root.leaf,
+            expanded: !collapsed,
+            onToggle: onToggle
+        ) {
+            HStack(spacing: 8) {
+                // Collapsed, the dots stand in for the rows that are hidden, so
+                // a folded stack still shows where the trouble is. Expanded,
+                // the rows themselves say it and repeating it is just noise.
                 if collapsed {
-                    // The dots stand in for the rows that are hidden, so a
-                    // collapsed stack still shows where the trouble is.
                     StackHealthStrip(stack: stack)
                 }
                 if behindTrunk > 0 {
                     Text("↓\(behindTrunk)")
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .font(Typo.meta)
+                        .monospacedDigit()
+                        .foregroundStyle(.tertiary)
                         .help("The bottom of this stack is \(behindTrunk) commit\(behindTrunk == 1 ? "" : "s") behind \(stack.trunk)")
                 }
                 Text("\(stack.nodeCount) → \(stack.trunk)")
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .font(Typo.meta)
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
                     .help("\(stack.prCount) PR\(stack.prCount == 1 ? "" : "s") · \(stack.nodeCount) branch\(stack.nodeCount == 1 ? "" : "es") onto \(stack.trunk)")
-                if stack.needsAttention {
-                    Image(systemName: "exclamationmark.circle.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                        .help("Something in this stack needs attention")
-                }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
     }
 }
 
@@ -232,7 +203,6 @@ struct ChainView: View {
     let onDelete: (Worktree) -> Void
     let onAddWorktree: (String) -> Void
     let onDrillIn: (StackNode) -> Void
-    var indent: CGFloat = 0
 
     private var layout: StackLayout { StackLayout(root: root) }
 
@@ -262,7 +232,6 @@ struct ChainView: View {
                 )
             }
         }
-        .padding(.leading, indent)
     }
 }
 
@@ -282,18 +251,16 @@ struct ForkBlockView: View {
             HStack(spacing: 4) {
                 Image(systemName: "arrow.turn.down.right")
                     .font(.system(size: 9, weight: .semibold))
-                Text("branched off")
-                    .font(.caption2)
-                Text(fork.parentLeaf)
-                    .font(.system(size: 10, design: .monospaced))
+                Text("off \(fork.parentLeaf)")
+                    .font(Typo.meta)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(.secondary)
-            .padding(.leading, 10)
-            .padding(.top, 3)
-            .padding(.bottom, 1)
+            .foregroundStyle(.tertiary)
+            .padding(.leading, Metrics.rail)
+            .padding(.top, 4)
+            .padding(.bottom, 2)
 
             ForEach(Array(fork.chain.enumerated()), id: \.element.id) { index, node in
                 NodeRow(
@@ -315,34 +282,35 @@ struct ForkBlockView: View {
                     if let first = fork.chain.first { onDrillIn(first) }
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "rectangle.stack")
-                            .font(.system(size: 9))
                         Text("\(fork.deeper.count) more branch\(fork.deeper.count == 1 ? "" : "es") below")
-                            .font(.caption2)
+                            .font(Typo.meta)
                         Image(systemName: "chevron.right")
                             .font(.system(size: 8, weight: .semibold))
                         Spacer(minLength: 0)
                     }
                     .foregroundStyle(Color.accentColor)
-                    .padding(.leading, 10)
+                    .padding(.leading, Metrics.rail)
                     .padding(.vertical, 3)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.leading, 12)
+        .padding(.leading, 10)
         .overlay(alignment: .leading) {
             Rectangle()
                 .fill(StackStyle.rail)
                 .frame(width: 1)
-                .padding(.leading, 6)
+                .padding(.leading, 7)
         }
     }
 }
 
 // MARK: - Row
 
+// One line per branch. The second line the old row had (PR number and badges
+// under the name) doubled the height of every row for metadata that reads fine
+// on the right-hand side of the same line.
 struct NodeRow: View {
     let node: StackNode
     let hasParent: Bool
@@ -354,51 +322,57 @@ struct NodeRow: View {
     let onAddWorktree: (String) -> Void
 
     @EnvironmentObject var store: Store
+    @Environment(\.cmuxAvailable) private var cmuxAvailable
     @State private var hovering = false
     @AppStorage(SettingsKeys.featurePullLatest) private var featurePull = true
     @AppStorage(SettingsKeys.featureBranchFrom) private var featureBranchFrom = true
     @AppStorage(SettingsKeys.featureCopyPath) private var featureCopyPath = true
     @AppStorage(SettingsKeys.featureOpenInTerminal) private var featureTerminal = true
     @AppStorage(SettingsKeys.featureOpenInStudio) private var featureStudio = true
+    @AppStorage(SettingsKeys.featureResolveConflicts) private var featureResolveConflicts = true
     @AppStorage(SettingsKeys.terminalApp) private var terminalApp = "Terminal"
 
     private var wt: Worktree? { node.worktree }
     private var busy: Bool { wt.map { store.busyPaths.contains($0.path) } ?? false }
 
+    private var status: RowStatus {
+        RowStatus(node: node, resolveEnabled: featureResolveConflicts && cmuxAvailable)
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 6) {
-            // Placeholder only: the rail is drawn as a background so it spans
-            // the row's full height. As an HStack child it would take its ideal
-            // height instead and stop short of the next row's dot.
-            Color.clear.frame(width: 16, height: 1)
-            VStack(alignment: .leading, spacing: 1) {
-                titleLine
-                PRFooter(node: node)
-                if expanded { expandedDetail }
+        VStack(alignment: .leading, spacing: 0) {
+            titleLine
+                .frame(height: Metrics.rowHeight)
+            if expanded {
+                expandedDetail
+                    .padding(.leading, Metrics.rail)
+                    .padding(.bottom, 6)
             }
-            .padding(.vertical, 4)
         }
-        .padding(.trailing, 6)
-        .background(alignment: .topLeading) { rail }
+        .padding(.horizontal, 6)
+        .background(alignment: .topLeading) { rail.padding(.leading, 6) }
         .background(
-            RoundedRectangle(cornerRadius: 5)
-                .fill(Color.primary.opacity(hovering || expanded ? 0.05 : 0))
-                .padding(.leading, 18)
+            RoundedRectangle(cornerRadius: Metrics.rowRadius, style: .continuous)
+                .fill(hovering || expanded ? StackStyle.rowHover : .clear)
+                .padding(.horizontal, 3)
         )
         .onHover { hovering = $0 }
     }
 
+    // Drawn as a background rather than an HStack child so it spans the row's
+    // full height — as a child it would take its ideal height and stop short of
+    // the next row's dot.
     private var rail: some View {
         VStack(spacing: 0) {
             Rectangle()
                 .fill(hasParent ? StackStyle.rail : .clear)
-                .frame(width: 1, height: 9)
+                .frame(width: 1, height: (Metrics.rowHeight - Metrics.dot) / 2)
             dot
             Rectangle()
                 .fill(hasChild ? StackStyle.rail : .clear)
                 .frame(width: 1)
         }
-        .frame(width: 16)
+        .frame(width: Metrics.rail)
     }
 
     @ViewBuilder
@@ -406,7 +380,7 @@ struct NodeRow: View {
         let ci = node.pr?.ci ?? CIState.none
         Circle()
             .fill(node.pr == nil ? Color.clear : StackStyle.ciColor(ci))
-            .frame(width: 8, height: 8)
+            .frame(width: Metrics.dot, height: Metrics.dot)
             .overlay(
                 Circle().strokeBorder(
                     node.pr == nil ? Color.secondary.opacity(0.5) : .clear,
@@ -426,31 +400,42 @@ struct NodeRow: View {
     }
 
     private var titleLine: some View {
-        HStack(spacing: 5) {
+        let status = self.status
+        return HStack(spacing: 6) {
+            Color.clear.frame(width: Metrics.rail - 6, height: 1)
+
             Text(node.leaf)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(StackStyle.nameColor(wt))
+                .font(Typo.row)
+                .foregroundStyle(StackStyle.nameColor(status.nameState))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .help(nameHelp)
 
-            if node.isGhost {
-                Text("no worktree")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(Capsule().fill(Color.primary.opacity(0.07)))
-                    .help("This PR is a link in the stack but isn't checked out locally")
+            LocalStateMarks(status: status)
+
+            // Not gated on hover like the other row actions: a conflict is
+            // blocking work, so the way out of it stays on screen.
+            if let wt, status.showsResolveChip {
+                ResolveConflictButton(blockedByDirtyTree: status.blockedByDirtyTree) {
+                    Task { await store.resolveConflicts(wt) }
+                }
             }
 
             Spacer(minLength: 4)
 
+            // Hover swaps the status glyphs for the actions; the PR number
+            // keeps its column either way, so the link never moves or vanishes
+            // under the pointer.
             if busy {
-                ProgressView().controlSize(.small)
+                ProgressView().controlSize(.small).scaleEffect(0.7).frame(height: 14)
             } else if hovering || expanded {
                 rowActions
+            } else {
+                PRStatus(status: status)
             }
+
+            PRNumber(pr: node.pr)
+                .frame(width: Metrics.prColumn, alignment: .trailing)
         }
     }
 
@@ -460,13 +445,15 @@ struct NodeRow: View {
             if wt.conflicts { parts.append("Merge conflict in progress") }
             else if wt.dirty { parts.append("\(wt.dirtyCount) uncommitted change\(wt.dirtyCount == 1 ? "" : "s")") }
             parts.append(wt.path)
+        } else {
+            parts.append("Not checked out here")
         }
         if let title = node.pr?.title { parts.append(title) }
         return parts.joined(separator: "\n")
     }
 
     private var rowActions: some View {
-        HStack(spacing: 1) {
+        HStack(spacing: 0) {
             if let wt {
                 if featureCopyPath {
                     MiniButton(icon: "doc.on.doc", help: "Copy worktree path") {
@@ -494,7 +481,7 @@ struct NodeRow: View {
                     onToggleExpand()
                 }
             } else {
-                MiniButton(icon: "plus.circle", help: "Add a worktree for this branch") {
+                MiniButton(icon: "plus", help: "Add a worktree for this branch") {
                     onAddWorktree(node.ref)
                 }
             }
@@ -506,21 +493,22 @@ struct NodeRow: View {
         VStack(alignment: .leading, spacing: 6) {
             if let pr = node.pr {
                 Text(pr.title)
-                    .font(.caption)
+                    .font(Typo.meta)
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 6) {
-                    Text("+\(pr.additions)")
-                        .foregroundStyle(.green)
-                    Text("−\(pr.deletions)")
-                        .foregroundStyle(.red)
+                HStack(spacing: 8) {
+                    HStack(spacing: 4) {
+                        Text("+\(pr.additions)").foregroundStyle(.green)
+                        Text("−\(pr.deletions)").foregroundStyle(.red)
+                    }
+                    .monospacedDigit()
                     Text("into \(pr.baseRef.shortRef)")
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                .font(.system(size: 10, design: .monospaced))
+                .font(Typo.meta)
             }
             if let wt {
                 HStack(spacing: 6) {
@@ -528,7 +516,7 @@ struct NodeRow: View {
                         Button {
                             Task { await store.pull(wt) }
                         } label: {
-                            Label("Pull main", systemImage: "arrow.down.circle")
+                            Label("Pull main", systemImage: "arrow.down")
                         }
                         .disabled(busy || wt.conflicts || wt.behindTrunk == 0)
                         .help(wt.behindTrunk == 0
@@ -539,7 +527,7 @@ struct NodeRow: View {
                         Button {
                             onBranchFrom(wt)
                         } label: {
-                            Label("Stack on", systemImage: "plus.rectangle.on.rectangle")
+                            Label("Stack on", systemImage: "plus")
                         }
                         .disabled(busy)
                         .help("New worktree branched off this one")
@@ -549,7 +537,6 @@ struct NodeRow: View {
                         onDelete(wt)
                     } label: {
                         Image(systemName: "trash")
-                            .foregroundStyle(.red)
                     }
                     .disabled(busy)
                     .help("Delete worktree and branch")
@@ -558,167 +545,153 @@ struct NodeRow: View {
                 .controlSize(.small)
             } else {
                 Text("Not checked out here — add a worktree to work on it.")
-                    .font(.caption2)
+                    .font(Typo.meta)
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.top, 3)
-        .padding(.bottom, 2)
+        .padding(.trailing, 6)
+        .padding(.top, 2)
     }
 }
 
-// MARK: - PR footer
+// MARK: - Row metadata
 
-struct PRFooter: View {
-    let node: StackNode
+// Uncommitted and unpushed work, in the dirty colour the branch name already
+// uses. Sits next to the name because it is a fact about the local branch, not
+// about its PR.
+struct LocalStateMarks: View {
+    let status: RowStatus
+
+    var body: some View {
+        if status.dirtyCount > 0 || status.unpushed > 0 {
+            HStack(spacing: 4) {
+                if status.dirtyCount > 0 {
+                    Text("\(status.dirtyCount)●")
+                        .help("\(status.dirtyCount) uncommitted change\(status.dirtyCount == 1 ? "" : "s")")
+                }
+                if status.unpushed > 0 {
+                    Text("↑\(status.unpushed)")
+                        .help("\(status.unpushed) commit\(status.unpushed == 1 ? "" : "s") not pushed anywhere")
+                }
+            }
+            .font(.system(size: 9))
+            .monospacedDigit()
+            .foregroundStyle(StackStyle.dirty)
+            .fixedSize()
+        }
+    }
+}
+
+// Everything about the PR except its number: draft, conflicts, review, comments.
+// Each item is either absent or exceptional — a healthy PR shows nothing here.
+struct PRStatus: View {
+    let status: RowStatus
 
     var body: some View {
         HStack(spacing: 6) {
-            if let pr = node.pr {
-                prNumber(pr)
-                if pr.isDraft {
-                    Text("draft")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 0.5)
-                        .background(Capsule().fill(Color.primary.opacity(0.08)))
-                }
-                if pr.mergeable == .conflicting {
-                    Label("conflicts", systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.red)
-                        .help("This PR conflicts with its base branch")
-                }
-                reviewBadge(pr)
-                CommentIndicator(pr: pr)
-            } else {
-                Text("no PR")
+            if status.isDraft {
+                Text("Draft")
+                    .font(Typo.meta)
+                    .foregroundStyle(.tertiary)
+            }
+            if status.showsConflictWarning {
+                Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 10))
-                    .foregroundStyle(.secondary.opacity(0.7))
+                    .foregroundStyle(.red)
+                    .help("This PR conflicts with its base branch")
             }
-            Spacer(minLength: 0)
-            localState
-        }
-    }
-
-    private func prNumber(_ pr: PullRequest) -> some View {
-        Button {
-            GitHubService.openPR(pr)
-        } label: {
-            HStack(spacing: 2) {
-                Text("#\(String(pr.number))")
-                    .font(.system(size: 10, design: .monospaced))
-                Image(systemName: "arrow.up.forward")
-                    .font(.system(size: 7, weight: .bold))
+            reviewBadge
+            CommentIndicator(comments: status.comments)
+            if let placeholder = status.placeholder {
+                Text(placeholder)
+                    .font(Typo.meta)
+                    .foregroundStyle(.tertiary)
+                    .help(status.nameState == .ghost
+                          ? "This PR is a link in the stack but isn't checked out locally"
+                          : "No pull request for this branch yet")
             }
-            .foregroundStyle(Color.accentColor)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .help("Open PR #\(String(pr.number)) in your browser")
+        .fixedSize()
     }
 
     @ViewBuilder
-    private func reviewBadge(_ pr: PullRequest) -> some View {
-        // REVIEW_REQUIRED is the default on almost every open PR, so only the
-        // states that actually changed something are worth a badge.
-        switch pr.review {
+    private var reviewBadge: some View {
+        switch status.review {
         case .approved:
             Image(systemName: "checkmark.seal.fill")
-                .font(.system(size: 10))
+                .font(.system(size: 11))
                 .foregroundStyle(.green)
                 .help("Approved")
         case .changesRequested:
             Image(systemName: "xmark.seal.fill")
-                .font(.system(size: 10))
-                .foregroundStyle(.orange)
+                .font(.system(size: 11))
+                .foregroundStyle(StackStyle.attention)
                 .help("Changes requested")
-        case .reviewRequired, .none:
+        case .none:
             EmptyView()
         }
     }
+}
 
-    @ViewBuilder
-    private var localState: some View {
-        if let wt = node.worktree {
-            HStack(spacing: 5) {
-                if wt.dirty {
-                    Text("\(wt.dirtyCount)●")
-                        .foregroundStyle(StackStyle.dirty)
-                        .help("\(wt.dirtyCount) uncommitted change\(wt.dirtyCount == 1 ? "" : "s")")
-                }
-                if wt.unpushed > 0 {
-                    Text("↑\(wt.unpushed)")
-                        .foregroundStyle(StackStyle.dirty)
-                        .help("\(wt.unpushed) commit\(wt.unpushed == 1 ? "" : "s") not pushed anywhere")
-                }
-                // How far behind the trunk a branch is deliberately isn't here:
-                // every branch in a stack is behind by roughly the same amount,
-                // so per-row it was the same number repeated down the card. It
-                // lives on the stack header instead.
+// The click target for the PR itself, right-aligned into a fixed column so the
+// numbers line up down the list.
+struct PRNumber: View {
+    let pr: PullRequest?
+    @State private var hovering = false
+
+    var body: some View {
+        if let pr {
+            Button {
+                GitHubService.openPR(pr)
+            } label: {
+                Text("#\(String(pr.number))")
+                    .font(Typo.meta)
+                    .monospacedDigit()
+                    .foregroundStyle(hovering ? Color.accentColor : Color.secondary)
+                    .contentShape(Rectangle())
             }
-            .font(.system(size: 10, design: .monospaced))
+            .buttonStyle(.plain)
+            .onHover { hovering = $0 }
+            .help("Open PR #\(String(pr.number)) in your browser")
         }
     }
 }
 
 // Comment authors as avatars: with four bots posting size reports and reviews
-// on every PR, a bare count says nothing — who is waiting on you does.
+// on every PR, a bare count says nothing — who is waiting on you does. Which
+// case applies is decided in RowStatus; this only draws it.
 struct CommentIndicator: View {
-    let pr: PullRequest
-
-    // Four bots comment on every single PR here, so showing the indicator
-    // whenever `participants` is non-empty lit up all 22 rows and told you
-    // nothing. Only unresolved threads (whoever opened them, bot or human) and
-    // real human comments qualify.
-    private var shown: [Commenter] {
-        let unresolved = pr.participants.filter { $0.unresolved > 0 }
-        if !unresolved.isEmpty { return unresolved }
-        return pr.participants.filter { !$0.isBot && !$0.isViewer && $0.comments > 0 }
-    }
+    let comments: RowStatus.Comments
 
     var body: some View {
-        let people = shown
-        if !people.isEmpty {
+        switch comments {
+        case .unresolved(let threads, let people):
             HStack(spacing: 3) {
-                Image(systemName: pr.unresolvedThreads > 0 ? "bubble.left.fill" : "bubble.left")
-                    .font(.system(size: 9))
-                    .foregroundStyle(pr.unresolvedThreads > 0 ? .orange : .secondary)
                 HStack(spacing: -3) {
-                    ForEach(people.prefix(3), id: \.login) { person in
+                    ForEach(people.prefix(2), id: \.login) { person in
                         AvatarView(person: person)
                     }
                 }
-                if people.count > 3 {
-                    Text("+\(people.count - 3)")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                }
-                if pr.unresolvedThreads > 0 {
-                    Text("\(pr.unresolvedThreads)")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.orange)
-                }
+                Text("\(threads)")
+                    .font(Typo.metaEmphasis)
+                    .monospacedDigit()
+                    .foregroundStyle(StackStyle.attention)
             }
-            .help(helpText)
+            .help(help(threads: threads, people: people))
+        case .bubble:
+            Image(systemName: "bubble.left")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .help("A comment from someone else, with nothing unresolved")
+        case .none:
+            EmptyView()
         }
     }
 
-    private var helpText: String {
-        var lines: [String] = []
-        if pr.unresolvedThreads > 0 {
-            lines.append("\(pr.unresolvedThreads) unresolved review thread\(pr.unresolvedThreads == 1 ? "" : "s")")
-        } else {
-            lines.append("No unresolved review threads")
-        }
-        for person in pr.participants {
-            var detail = "\(person.login)\(person.isBot ? " (bot)" : "")"
-            var counts: [String] = []
-            if person.unresolved > 0 { counts.append("\(person.unresolved) unresolved") }
-            if person.comments > 0 { counts.append("\(person.comments) comment\(person.comments == 1 ? "" : "s")") }
-            if !counts.isEmpty { detail += " — " + counts.joined(separator: ", ") }
-            lines.append(detail)
+    private func help(threads: Int, people: [Commenter]) -> String {
+        var lines = ["\(threads) unresolved review thread\(threads == 1 ? "" : "s")"]
+        for person in people {
+            lines.append("\(person.login)\(person.isBot ? " (bot)" : "") — \(person.unresolved) unresolved")
         }
         return lines.joined(separator: "\n")
     }
@@ -741,11 +714,10 @@ struct AvatarView: View {
                 Rectangle().fill(Color.primary.opacity(0.15))
             }
         }
-        .frame(width: 14, height: 14)
+        .frame(width: 13, height: 13)
         .clipShape(shape)
         // Ring in the window colour so overlapping avatars stay separable.
-        .overlay(shape.stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 2))
-        .opacity(person.unresolved > 0 ? 1 : 0.75)
+        .overlay(shape.stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
         .task { cache.load(person.avatarURL) }
     }
 }
@@ -761,126 +733,68 @@ struct MergedSection: View {
     private var prunable: [Worktree] { worktrees.filter { !$0.dirty && $0.unpushed == 0 } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                expanded.toggle()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 9)
-                    Image(systemName: "checkmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("Merged")
-                        .font(.caption.weight(.semibold))
-                    Text("\(worktrees.count) branch\(worktrees.count == 1 ? "" : "es") already in \(Config.trunkRef.shortRef)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .contentShape(Rectangle())
+        VStack(alignment: .leading, spacing: 3) {
+            SectionHeader(
+                title: "Merged",
+                subtitle: "\(worktrees.count) branch\(worktrees.count == 1 ? "" : "es") already in \(Config.trunkRef.shortRef)",
+                expanded: expanded,
+                onToggle: { expanded.toggle() }
+            ) {
+                EmptyView()
             }
-            .buttonStyle(.plain)
 
             if expanded {
-                ForEach(worktrees) { wt in
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 16)
-                        Text(wt.branch)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer(minLength: 0)
-                        if wt.dirty || wt.unpushed > 0 {
-                            Text(wt.dirty ? "uncommitted" : "unpushed")
-                                .font(.system(size: 9))
-                                .foregroundStyle(StackStyle.dirty)
-                                .help("Kept out of the prune — it still has local work")
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(worktrees) { wt in
+                        HStack(spacing: 6) {
+                            Text(wt.branch)
+                                .font(Typo.meta)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 4)
+                            if wt.dirty || wt.unpushed > 0 {
+                                Text(wt.dirty ? "uncommitted" : "unpushed")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(StackStyle.dirty)
+                                    .help("Kept out of the prune — it still has local work")
+                            }
                         }
+                        .padding(.horizontal, 10)
+                        .frame(height: 20)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                }
 
-                if confirming {
-                    HStack(spacing: 6) {
-                        Text("Delete \(prunable.count) worktree\(prunable.count == 1 ? "" : "s") and branch\(prunable.count == 1 ? "" : "es")?")
-                            .font(.caption2)
-                        Spacer(minLength: 0)
-                        Button("Cancel") { confirming = false }
-                        Button("Prune", role: .destructive) {
-                            let targets = prunable
-                            confirming = false
-                            Task { await store.pruneMerged(targets) }
+                    if confirming {
+                        HStack(spacing: 6) {
+                            Text("Delete \(prunable.count) worktree\(prunable.count == 1 ? "" : "s") and branch\(prunable.count == 1 ? "" : "es")?")
+                                .font(Typo.meta)
+                            Spacer(minLength: 0)
+                            Button("Cancel") { confirming = false }
+                            Button("Prune", role: .destructive) {
+                                let targets = prunable
+                                confirming = false
+                                Task { await store.pruneMerged(targets) }
+                            }
                         }
+                        .controlSize(.small)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                    } else if !prunable.isEmpty {
+                        Button {
+                            confirming = true
+                        } label: {
+                            Label("Prune \(prunable.count) merged", systemImage: "trash")
+                                .font(Typo.meta)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
                     }
-                    .controlSize(.small)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                } else if !prunable.isEmpty {
-                    Button {
-                        confirming = true
-                    } label: {
-                        Label("Prune \(prunable.count) merged", systemImage: "trash")
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .stackGroup()
             }
         }
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.035)))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
-    }
-}
-
-// MARK: - Buttons
-
-struct MiniButton: View {
-    let icon: String
-    let help: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 10))
-                .frame(width: 18, height: 16)
-        }
-        .buttonStyle(HoverBackgroundButtonStyle())
-        .help(help)
-    }
-}
-
-struct MiniAppButton: View {
-    let icon: NSImage?
-    let fallbackIcon: String
-    let help: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Group {
-                if let icon {
-                    Image(nsImage: icon).resizable().frame(width: 13, height: 13)
-                } else {
-                    Image(systemName: fallbackIcon).font(.system(size: 10))
-                }
-            }
-            .frame(width: 18, height: 16)
-        }
-        .buttonStyle(HoverBackgroundButtonStyle())
-        .help(help)
     }
 }

@@ -21,7 +21,7 @@ struct MenuView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            PanelHeader()
             Divider()
             content
             if let banner = store.banner, mode == .list {
@@ -33,9 +33,18 @@ struct MenuView: View {
                 PRErrorBar(message: error)
             }
             Divider()
-            footer
+            PanelFooter(
+                onNew: {
+                    store.banner = nil
+                    mode = .create(base: nil)
+                },
+                onAddExisting: {
+                    store.banner = nil
+                    mode = .addExisting(branch: nil)
+                }
+            )
         }
-        .frame(width: 420)
+        .frame(width: Metrics.panelWidth)
         .background(WindowClamp())
         .onAppear {
             store.banner = nil
@@ -44,57 +53,6 @@ struct MenuView: View {
             store.startPolling()
             Task { await store.refreshOnOpen() }
         }
-    }
-
-    private var header: some View {
-        HStack(spacing: 6) {
-            Text("Stacks")
-                .font(.headline)
-            if store.isLoading || store.isLoadingPRs {
-                ProgressView()
-                    .controlSize(.small)
-                    .padding(.leading, 2)
-            }
-            if store.attentionCount > 0 {
-                Text("\(store.attentionCount)")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Capsule().fill(Color.orange))
-                    .help("\(store.attentionCount) item\(store.attentionCount == 1 ? "" : "s") need attention (CI failure, conflict, or unresolved review)")
-            }
-            Spacer()
-            Text(freshness)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            if featureStudio {
-                AppIconButton(icon: AppIcons.studio, fallbackIcon: "hammer",
-                              help: "Open main repo in Android Studio") {
-                    Task { await store.openMainRepo() }
-                }
-            }
-            Button {
-                Task { await store.refreshEverything() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(HoverBackgroundButtonStyle())
-            .disabled(store.isLoading || store.isLoadingPRs)
-            .help("Fetch origin/main and re-read git + PR state")
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-    }
-
-    // PR data is polled every 30 minutes, so the age of it matters more than
-    // with the purely local git state.
-    private var freshness: String {
-        guard let at = store.prFetchedAt else { return "PRs not fetched" }
-        let minutes = Int(Date().timeIntervalSince(at) / 60)
-        if minutes < 1 { return "PRs just now" }
-        if minutes < 60 { return "PRs \(minutes)m ago" }
-        return "PRs \(minutes / 60)h ago"
     }
 
     @ViewBuilder
@@ -128,19 +86,85 @@ struct MenuView: View {
         }
     }
 
-    private var footer: some View {
-        HStack(spacing: 8) {
-            Button {
-                store.banner = nil
-                mode = .create(base: nil)
-            } label: {
-                Label("New", systemImage: "plus")
+}
+
+// MARK: - Panel chrome
+
+// Split out of MenuView so `--render` can shoot the whole panel, chrome
+// included, instead of the list alone.
+struct PanelHeader: View {
+    @EnvironmentObject var store: Store
+    @AppStorage(SettingsKeys.featureOpenInStudio) private var featureStudio = true
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("Stacks")
+                .font(.system(size: 13, weight: .semibold))
+            if store.attentionCount > 0 {
+                AttentionPill(
+                    count: store.attentionCount,
+                    help: "\(store.attentionCount) item\(store.attentionCount == 1 ? "" : "s") need attention (CI failure, conflict, or unresolved review)"
+                )
             }
-            if featureAddExisting {
-                Button("Add Existing…") {
-                    store.banner = nil
-                    mode = .addExisting(branch: nil)
+            if store.isLoading || store.isLoadingPRs {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+                    .frame(width: 14, height: 14)
+            }
+            Spacer()
+            Text(freshness)
+                .font(Typo.meta)
+                .foregroundStyle(.tertiary)
+            if featureStudio {
+                AppIconButton(icon: AppIcons.studio, fallbackIcon: "hammer",
+                              help: "Open main repo in Android Studio") {
+                    Task { await store.openMainRepo() }
                 }
+            }
+            Button {
+                Task { await store.refreshEverything() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20, height: 18)
+            }
+            .buttonStyle(HoverBackgroundButtonStyle(padding: 0))
+            .disabled(store.isLoading || store.isLoadingPRs)
+            .help("Fetch origin/main and re-read git + PR state")
+        }
+        .padding(.horizontal, Metrics.gutter)
+        .padding(.vertical, 9)
+    }
+
+    private var freshness: String {
+        PRFreshness.label(fetchedAt: store.prFetchedAt)
+    }
+}
+
+// One accent-coloured control in the whole panel, on the primary action.
+// Everything else stays neutral so this is the thing the eye lands on.
+struct PanelFooter: View {
+    let onNew: () -> Void
+    let onAddExisting: () -> Void
+
+    @Environment(\.openSettings) private var openSettings
+    @AppStorage(SettingsKeys.featureAddExisting) private var featureAddExisting = true
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button(action: onNew) {
+                Label("New Worktree", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+            if featureAddExisting {
+                Button(action: onAddExisting) {
+                    Text("Add Existing…")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(HoverBackgroundButtonStyle(padding: 5))
             }
             Spacer()
             Button {
@@ -150,12 +174,15 @@ struct MenuView: View {
                 openSettings()
             } label: {
                 Image(systemName: "gearshape")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20, height: 18)
             }
-            .buttonStyle(HoverBackgroundButtonStyle())
+            .buttonStyle(HoverBackgroundButtonStyle(padding: 0))
             .help("Settings")
         }
         .controlSize(.small)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, Metrics.gutter)
         .padding(.vertical, 8)
     }
 }
@@ -178,13 +205,13 @@ struct SubStackView: View {
             Button(action: onBack) {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.left")
-                        .font(.caption2.weight(.semibold))
+                        .font(.system(size: 10, weight: .semibold))
                     Text("All stacks")
-                        .font(.caption)
+                        .font(Typo.meta)
                     Spacer(minLength: 0)
                 }
                 .foregroundStyle(Color.accentColor)
-                .padding(.horizontal, 12)
+                .padding(.horizontal, Metrics.gutter)
                 .padding(.vertical, 6)
                 .contentShape(Rectangle())
             }
@@ -192,11 +219,10 @@ struct SubStackView: View {
 
             if let node = node {
                 Text(node.ref)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .font(Typo.sectionTitle)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, Metrics.gutter)
                     .padding(.bottom, 4)
                 ScrollView {
                     ChainView(
@@ -207,15 +233,16 @@ struct SubStackView: View {
                         onAddWorktree: onAddWorktree,
                         onDrillIn: onDrillIn
                     )
-                    .padding(.horizontal, 6)
-                    .padding(.bottom, 6)
+                    .stackGroup()
+                    .padding(.horizontal, Metrics.gutter)
+                    .padding(.bottom, 8)
                 }
-                .frame(height: min(CGFloat(node.subtreeCount) * 46 + 12, 11 * 46))
+                .frame(height: min(CGFloat(node.subtreeCount) * Metrics.rowHeight + 20, Metrics.maxListHeight))
             } else {
                 Text("That branch is no longer in the stack.")
-                    .font(.caption)
+                    .font(Typo.meta)
                     .foregroundStyle(.secondary)
-                    .padding(12)
+                    .padding(Metrics.gutter)
             }
         }
     }
@@ -244,16 +271,16 @@ struct PRErrorBar: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "wifi.slash")
-                .font(.caption2)
-                .foregroundStyle(.orange)
+                .font(.system(size: 10))
+                .foregroundStyle(StackStyle.attention)
             Text("PR data unavailable — \(message)")
-                .font(.caption2)
+                .font(Typo.meta)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 5)
+        .padding(.horizontal, Metrics.gutter)
+        .padding(.vertical, 6)
     }
 }
 
@@ -296,15 +323,18 @@ struct AppIconButton: View {
 
     var body: some View {
         Button(action: action) {
-            if let icon {
-                Image(nsImage: icon)
-                    .frame(width: 22, height: 20)
-            } else {
-                Image(systemName: fallbackIcon)
-                    .frame(width: 22, height: 20)
+            Group {
+                if let icon {
+                    Image(nsImage: icon).resizable().frame(width: 14, height: 14)
+                } else {
+                    Image(systemName: fallbackIcon)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
             }
+            .frame(width: 20, height: 18)
         }
-        .buttonStyle(HoverBackgroundButtonStyle())
+        .buttonStyle(HoverBackgroundButtonStyle(padding: 0))
         .help(help)
     }
 }
@@ -730,24 +760,5 @@ struct ErrorText: View {
             .foregroundStyle(.red)
             .lineLimit(6)
             .textSelection(.enabled)
-    }
-}
-
-// MARK: - Custom Button Style
-
-struct HoverBackgroundButtonStyle: ButtonStyle {
-    @State private var hovering = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.primary.opacity(configuration.isPressed ? 0.15 : 0.08))
-                    .opacity(hovering ? 1 : 0)
-            )
-            .contentShape(Rectangle())
-            .onHover { hovering = $0 }
     }
 }

@@ -46,19 +46,7 @@ enum Entry {
         // stack. Real data is mostly linear chains, so the fork and drill-in
         // paths would otherwise go untested.
         if CommandLine.arguments.contains("--stacks-selftest") {
-            //  main → a ─┬─ b ─┬─ d ─ f        (b/d/f is the mainline: biggest subtree)
-            //            │     └─ e            (fork inside the mainline)
-            //            └─ c ─ g ─┬─ h        (fork off a; h continues its chain)
-            //                      └─ i        (fork inside a fork => drill-in)
-            let edges = [("a", "main"), ("b", "a"), ("c", "a"), ("d", "b"),
-                         ("e", "b"), ("f", "d"), ("g", "c"), ("h", "g"), ("i", "g")]
-            let prs = edges.enumerated().map { index, edge in
-                PullRequest(number: index + 1, title: "PR \(edge.0)", url: "", headRef: edge.0,
-                            baseRef: edge.1, isDraft: false, mergeable: .mergeable, review: .none,
-                            ci: .success, unresolvedThreads: 0, additions: 0, deletions: 0,
-                            updatedAt: Date(timeIntervalSince1970: Double(1000 - index)), participants: [])
-            }
-            let tree = StackBuilder.build(worktrees: [], pullRequests: prs)
+            let tree = StackBuilder.build(worktrees: [], pullRequests: SampleData.forkedStackPullRequests)
             print("stacks: \(tree.stacks.count) (expected 1)")
             for stack in tree.stacks {
                 print("root \(stack.root.ref), \(stack.nodeCount) branches (expected 9)")
@@ -88,31 +76,39 @@ enum Entry {
             print(outcome.ok ? "ok" : "error: \(outcome.message ?? "failed")")
             return
         }
-        WorktreeManagerApp.main()
-    }
-
-    // The synthetic branching stack from --stacks-selftest, so the fork block
-    // and drill-in button can be looked at. Real data is mostly linear.
-    private static var selftestPRs: [PullRequest] {
-        let edges = [("a-bottom", "main"), ("b-mainline", "a-bottom"), ("c-fork", "a-bottom"),
-                     ("d-mainline", "b-mainline"), ("e-fork-of-fork", "b-mainline"),
-                     ("f-mainline-tip", "d-mainline"), ("g-fork-mid", "c-fork"),
-                     ("h-fork-tip", "g-fork-mid"), ("i-deep-fork", "g-fork-mid")]
-        return edges.enumerated().map { index, edge in
-            PullRequest(number: 100 + index, title: "PR \(edge.0)", url: "", headRef: edge.0,
-                        baseRef: edge.1, isDraft: index % 3 == 0, mergeable: .mergeable,
-                        review: index == 1 ? .approved : .none,
-                        ci: index == 2 ? .failure : (index == 4 ? .pending : .success),
-                        unresolvedThreads: index == 3 ? 2 : 0, additions: 10, deletions: 5,
-                        updatedAt: Date(timeIntervalSince1970: Double(1000 - index)), participants: [])
+        // Debug/verification hook: fire the conflict-resolution command in a cmux
+        // tab for a path and exit, no UI.
+        if let i = CommandLine.arguments.firstIndex(of: "--resolve-conflicts"),
+           i + 1 < CommandLine.arguments.count {
+            let outcome = await GitService.resolveConflicts(
+                path: CommandLine.arguments[i + 1],
+                command: CommandLine.arguments.count > i + 2
+                    ? CommandLine.arguments[i + 2]
+                    : Config.resolveConflictsCommand
+            )
+            print(outcome.ok ? "ok" : "error: \(outcome.message ?? "failed")")
+            return
         }
+        WorktreeManagerApp.main()
     }
 
     @MainActor
     private static func renderStackList(to path: String) async {
+        // Both appearances have to be checked: the panel is mostly opacity-based
+        // fills, which behave differently over a dark window background.
+        let dark = CommandLine.arguments.contains("--dark")
+        if dark {
+            NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
+        }
+        // --demo and --forks draw from SampleData, so the panel can be looked at
+        // on a machine with no repo, no gh and no network. Nothing is fetched in
+        // those modes, so the live repositories are never actually called.
         let store = Store()
         if CommandLine.arguments.contains("--forks") {
-            store.injectForRender(worktrees: [], pullRequests: selftestPRs)
+            store.injectForRender(worktrees: [], pullRequests: SampleData.forkedStackPullRequests)
+        } else if CommandLine.arguments.contains("--demo") {
+            store.injectForRender(worktrees: SampleData.demoWorktrees,
+                                  pullRequests: SampleData.demoPullRequests)
         } else {
             await store.refresh()
             await store.refreshPullRequests()
@@ -126,30 +122,39 @@ enum Entry {
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
 
-        // The cards are composed directly rather than through StackListView,
-        // whose ScrollView renders empty offscreen.
+        // The sections are composed directly rather than through StackListView,
+        // whose ScrollView renders empty offscreen. Header and footer are the
+        // real ones, so the whole panel can be eyeballed in one shot.
         let expanded = CommandLine.arguments.contains("--expand-first")
-            ? store.stacks.first?.id
+            ? store.stacks.first?.root.ref
             : nil
-        let view = VStack(spacing: 6) {
-            ForEach(store.stacks) { stack in
-                StackCard(
-                    stack: stack,
-                    collapsed: false,
-                    onToggle: {},
-                    expandedRef: .constant(expanded),
-                    onBranchFrom: { _ in }, onDelete: { _ in },
-                    onAddWorktree: { _ in }, onDrillIn: { _ in }
-                )
+        let view = VStack(spacing: 0) {
+            PanelHeader()
+            Divider()
+            VStack(alignment: .leading, spacing: Metrics.sectionGap) {
+                ForEach(store.stacks) { stack in
+                    StackSection(
+                        stack: stack,
+                        collapsed: false,
+                        onToggle: {},
+                        expandedRef: .constant(expanded),
+                        onBranchFrom: { _ in }, onDelete: { _ in },
+                        onAddWorktree: { _ in }, onDrillIn: { _ in }
+                    )
+                }
+                if !store.mergedWorktrees.isEmpty {
+                    MergedSection(worktrees: store.mergedWorktrees)
+                }
             }
-            if !store.mergedWorktrees.isEmpty {
-                MergedSection(worktrees: store.mergedWorktrees)
-            }
+            .padding(.horizontal, Metrics.gutter)
+            .padding(.vertical, 8)
+            Divider()
+            PanelFooter(onNew: {}, onAddExisting: {})
         }
-        .padding(6)
         .environmentObject(store)
-        .frame(width: 420)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .environment(\.colorScheme, dark ? .dark : .light)
+        .frame(width: Metrics.panelWidth)
+        .background(dark ? Color(red: 0.13, green: 0.13, blue: 0.14) : Color(nsColor: .windowBackgroundColor))
 
         let renderer = ImageRenderer(content: view)
         renderer.scale = 2

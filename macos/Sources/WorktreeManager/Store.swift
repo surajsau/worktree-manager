@@ -23,10 +23,28 @@ final class Store: ObservableObject {
 
     private var pollTask: Task<Void, Never>?
 
-    init() {
+    private let git: WorktreeRepository
+    private let github: PullRequestRepository
+    private let cache: PRSnapshotStore
+    private let avatars: AvatarLoading
+
+    // Defaults are the live ones, so the app constructs `Store()` as before;
+    // tests hand it fakes instead.
+    init(
+        git: WorktreeRepository = LiveWorktreeRepository(),
+        github: PullRequestRepository = LivePullRequestRepository(),
+        cache: PRSnapshotStore = DiskPRSnapshotStore(),
+        // nil rather than AvatarCache.shared: a main-actor default argument is
+        // evaluated in a nonisolated context.
+        avatars: AvatarLoading? = nil
+    ) {
+        self.git = git
+        self.github = github
+        self.cache = cache
+        self.avatars = avatars ?? AvatarCache.shared
         // Whatever the last fetch saw, so the first menu open already has PR
         // numbers on the rows instead of a bare git tree.
-        if let snapshot = PRCache.load() {
+        if let snapshot = cache.load() {
             pullRequests = snapshot.pullRequests
             prFetchedAt = snapshot.fetchedAt
         }
@@ -55,10 +73,19 @@ final class Store: ObservableObject {
         mergedWorktrees = tree.merged
     }
 
+    // Branches that need you, not signals: a branch whose PR conflicts *and*
+    // whose worktree has the merge half-done is one thing to go and fix, and
+    // the badge claims to count items.
     var attentionCount: Int {
-        pullRequests.filter {
-            $0.ci == .failure || $0.mergeable == .conflicting || $0.unresolvedThreads > 0
-        }.count + worktrees.filter(\.conflicts).count
+        var refs = Set<String>()
+        for pr in pullRequests
+        where pr.ci == .failure || pr.mergeable == .conflicting || pr.unresolvedThreads > 0 {
+            refs.insert(pr.headRef)
+        }
+        for wt in worktrees where wt.conflicts {
+            refs.insert(wt.branch)
+        }
+        return refs.count
     }
 
     // MARK: - Refresh
@@ -67,7 +94,7 @@ final class Store: ObservableObject {
     func refresh() async {
         if isLoading { return }
         isLoading = true
-        worktrees = await GitService.listWorktrees()
+        worktrees = await git.listWorktrees()
         rebuildTree()
         isLoading = false
         hasLoadedOnce = true
@@ -86,24 +113,24 @@ final class Store: ObservableObject {
     // The explicit refresh button: fetches the trunk too, so merged-branch
     // detection is measured against an up-to-date origin/main.
     func refreshEverything() async {
-        await GitService.fetchTrunk()
-        async let git: Void = refresh()
+        await git.fetchTrunk()
+        async let gitState: Void = refresh()
         async let prs: Void = refreshPullRequests()
-        _ = await (git, prs)
+        _ = await (gitState, prs)
     }
 
     func refreshPullRequests() async {
         if isLoadingPRs { return }
         isLoadingPRs = true
-        switch await GitHubService.fetchPullRequests() {
+        switch await github.fetchPullRequests() {
         case .success(let prs):
             pullRequests = prs
             prFetchedAt = Date()
             prError = nil
             rebuildTree()
-            PRCache.save(PRSnapshot(pullRequests: prs, fetchedAt: Date()))
+            cache.save(PRSnapshot(pullRequests: prs, fetchedAt: Date()))
             for url in prs.flatMap({ $0.participants.map(\.avatarURL) }) {
-                AvatarCache.shared.load(url)
+                avatars.load(url)
             }
         case .failure(let failure):
             // Keep the cached PRs on screen — stale numbers beat none.
@@ -123,7 +150,7 @@ final class Store: ObservableObject {
                 // Re-read the setting each tick so turning the poll off in
                 // Settings takes effect without a relaunch.
                 guard Self.pollingEnabled else { continue }
-                await GitService.fetchTrunk()
+                await self?.git.fetchTrunk()
                 await self?.refreshPullRequests()
                 await self?.refresh()
             }
@@ -139,12 +166,12 @@ final class Store: ObservableObject {
     func loadBaseBranches() async {
         if isLoadingBranches { return }
         isLoadingBranches = true
-        baseBranches = await GitService.listBaseBranches()
+        baseBranches = await git.listBaseBranches()
         isLoadingBranches = false
     }
 
     func create(name: String, base: String?) async -> OpOutcome {
-        let outcome = await GitService.createWorktree(name: name, base: base)
+        let outcome = await git.createWorktree(name: name, base: base)
         if outcome.ok {
             banner = Banner(text: "Created \(Config.branchPrefix)\(name).", isError: false)
             await refresh()
@@ -153,7 +180,7 @@ final class Store: ObservableObject {
     }
 
     func addExisting(branch: String) async -> OpOutcome {
-        let outcome = await GitService.addExistingWorktree(branch: branch)
+        let outcome = await git.addExistingWorktree(branch: branch)
         if outcome.ok {
             banner = Banner(text: "Added worktree for \(branch).", isError: false)
             await refresh()
@@ -163,7 +190,7 @@ final class Store: ObservableObject {
 
     func delete(_ wt: Worktree) async {
         busyPaths.insert(wt.path)
-        let outcome = await GitService.deleteWorktree(path: wt.path, branch: wt.branch)
+        let outcome = await git.deleteWorktree(path: wt.path, branch: wt.branch)
         busyPaths.remove(wt.path)
         banner = Banner(text: outcome.message ?? (outcome.ok ? "Deleted." : "delete failed"), isError: !outcome.ok)
         await refresh()
@@ -182,7 +209,7 @@ final class Store: ObservableObject {
         var removed: [String] = []
         var failed: [String] = []
         for wt in safe {
-            let outcome = await GitService.deleteWorktree(path: wt.path, branch: wt.branch)
+            let outcome = await git.deleteWorktree(path: wt.path, branch: wt.branch)
             if outcome.ok { removed.append(wt.branch) } else { failed.append(wt.branch) }
             busyPaths.remove(wt.path)
         }
@@ -197,7 +224,7 @@ final class Store: ObservableObject {
 
     func pull(_ wt: Worktree) async {
         busyPaths.insert(wt.path)
-        let outcome = await GitService.pullLatest(path: wt.path)
+        let outcome = await git.pullLatest(path: wt.path)
         busyPaths.remove(wt.path)
         banner = Banner(text: outcome.message ?? (outcome.ok ? "Done." : "pull failed"), isError: !outcome.ok)
         await refresh()
@@ -212,7 +239,7 @@ final class Store: ObservableObject {
     }
 
     private func openInStudio(path: String) async {
-        let outcome = await GitService.open(path: path, app: Config.studioApp)
+        let outcome = await git.open(path: path, app: Config.studioApp)
         if !outcome.ok {
             banner = Banner(text: outcome.message ?? "failed to open", isError: true)
         }
@@ -223,10 +250,23 @@ final class Store: ObservableObject {
     func openInTerminal(_ wt: Worktree) async {
         let terminal = TerminalApps.selected
         let outcome = terminal == TerminalApps.cmuxName
-            ? await GitService.openInCmux(path: wt.path)
-            : await GitService.open(path: wt.path, app: terminal)
+            ? await git.openInCmux(path: wt.path)
+            : await git.open(path: wt.path, app: terminal)
         if !outcome.ok {
             banner = Banner(text: outcome.message ?? "failed to open \(terminal)", isError: true)
         }
+    }
+
+    func resolveConflicts(_ wt: Worktree) async {
+        // Marked busy because a cold cmux is started and waited for, which is
+        // seconds of nothing happening otherwise.
+        busyPaths.insert(wt.path)
+        let outcome = await git.resolveConflicts(
+            path: wt.path,
+            command: Config.resolveConflictsCommand
+        )
+        busyPaths.remove(wt.path)
+        banner = Banner(text: outcome.message ?? (outcome.ok ? "Done." : "failed to start conflict resolution"),
+                        isError: !outcome.ok)
     }
 }

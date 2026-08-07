@@ -16,11 +16,12 @@ If any of these files don't exist, **proceed silently**. Don't flag their absenc
 ```
 /
 ├── CONTEXT.md
+├── DESIGN.md          ← the menu bar panel's visual rules and tokens
 ├── docs/adr/
 │   ├── 0001-....md
 │   └── 0002-....md
-├── macos/
-└── server.js
+├── macos/             ← the app (Sources/) and its tests (Tests/)
+└── *.sh               ← the git operations the app shells out to
 ```
 
 If this repo ever splits into multiple bounded contexts, add a `CONTEXT-MAP.md` at the root pointing at one `CONTEXT.md` per context, and let each context keep its own `docs/adr/`.

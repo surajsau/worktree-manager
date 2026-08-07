@@ -1,4 +1,4 @@
-.PHONY: macos web
+.PHONY: macos test render
 
 # Rebuild the menu bar app bundle and relaunch it
 macos:
@@ -7,7 +7,15 @@ macos:
 	sleep 1
 	open macos/WorktreeManager.app
 
-# Restart the zero-dep web server (http://localhost:4180)
-web:
-	-pkill -f 'node server.js'
-	node server.js
+# Run the test suite (fake data, no repo/gh/network needed).
+# `make test FILTER=PanelRenderTests` runs one suite — the filter matches
+# type/function names, not the @Test display names.
+test:
+	cd macos && swift test $(if $(FILTER),--filter $(FILTER),)
+
+# Render the panel from fake data, both appearances, and open them
+render:
+	cd macos && swift build -c release
+	./macos/.build/release/WorktreeManager --render /tmp/panel-light.png --demo
+	./macos/.build/release/WorktreeManager --render /tmp/panel-dark.png --demo --dark
+	open /tmp/panel-light.png /tmp/panel-dark.png
