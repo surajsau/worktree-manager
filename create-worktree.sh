@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
 #
-# Create a git worktree for abema-androidtv: a fresh branch off the latest
-# origin/main (or a given base branch), plus the gitignored local files listed
-# in copy-on-create.txt.
+# Create a git worktree: a fresh branch off the latest trunk (or a given base
+# branch), plus the gitignored local files listed in copy-on-create.txt.
 #
 # Usage:  ./create-worktree.sh <name> [base]
-#   <name> is the part after the fixed "suraj/" prefix. It may contain slashes,
-#   which become "+" in the folder name (suraj/foo/bar -> suraj+foo+bar).
-#   [base] is the ref to branch off; defaults to origin/main. `git fetch` runs
-#   only when the base is a remote ref (origin/...).
+#   <name> is the part after the configured branch prefix. It may contain
+#   slashes, which become "+" in the folder name (foo/bar -> foo+bar).
+#   [base] is the ref to branch off; defaults to origin/<main branch>.
+#   `git fetch` runs only when the base is a remote ref (origin/...).
+#
+# The repository, worktree folder, branch prefix and main branch come from
+# config.sh — see the comment at the top of it.
 #
 # Exit 0 on success, non-zero on failure (with an error message on stderr).
-# Safe to invoke from the web server, a Claude skill, or any shell.
+# Safe to invoke from the app, a Claude skill, or any shell.
 
 set -euo pipefail
 
 # --- Config -----------------------------------------------------------------
-MAIN_REPO="/Users/s24270/Documents/Github/abema-androidtv"
-WORKTREE_DIR="/Users/s24270/Documents/Github/worktrees"
-BRANCH_PREFIX="suraj/"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=config.sh
+source "$SCRIPT_DIR/config.sh"
+require_repo
 COPY_LIST_FILE="$SCRIPT_DIR/copy-on-create.txt"
 
 die() { echo "error: $1" >&2; exit 1; }
@@ -36,7 +38,7 @@ name="${1:-}"
 [[ "$name" != .* && "$name" != *. ]] || die "name cannot start or end with '.'"
 
 # --- Validate base ------------------------------------------------------------
-base="${2:-origin/main}"
+base="${2:-origin/$MAIN_BRANCH}"
 [[ "$base" != -* ]]                 || die "base cannot start with '-'"
 [[ "$base" != *[[:space:]]* ]]      || die "base cannot contain spaces"
 [[ "$base" != *[\~^:?*\[\]\\@]* ]]  || die "base contains an invalid character"

@@ -70,7 +70,7 @@ struct PanelRenderTests {
     @Test("a failing check turns its own dot red and leaves the others alone")
     func failingCheckIsLocal() {
         var prs = SampleData.healthyPullRequests
-        prs[1] = SampleData.pr(2, head: "suraj/calm/second", base: "suraj/calm/first", ci: .failure)
+        prs[1] = SampleData.pr(2, head: "calm/second", base: "calm/first", ci: .failure)
         let (view, _) = Snapshot.section(worktrees: SampleData.healthyWorktrees, pullRequests: prs)
         let image = Snapshot.render(view)
         #expect(image.count(dotColumn.intersect(rowBand(1))) { $0 == .red } > 0,
@@ -83,7 +83,7 @@ struct PanelRenderTests {
     @Test("a conflicted row shows the Resolve chip, and only with cmux")
     func resolveChipNeedsCmux() {
         var worktrees = SampleData.healthyWorktrees
-        worktrees[0] = SampleData.worktree("suraj/calm/first", conflicts: true, commitsAboveTrunk: 2)
+        worktrees[0] = SampleData.worktree("calm/first", conflicts: true, commitsAboveTrunk: 2)
 
         let (withCmux, _) = Snapshot.section(worktrees: worktrees,
                                              pullRequests: SampleData.healthyPullRequests,
@@ -99,7 +99,7 @@ struct PanelRenderTests {
 
     @Test("the PR number keeps its column however long the branch name is")
     func numberColumnSurvivesLongNames() {
-        let long = "suraj/preview/a-branch-name-that-is-far-too-long-to-fit-on-one-line"
+        let long = "preview/a-branch-name-that-is-far-too-long-to-fit-on-one-line"
         let (view, _) = Snapshot.section(worktrees: [SampleData.worktree(long, commitsAboveTrunk: 2)],
                                          pullRequests: [SampleData.pr(18599, head: long)])
         let image = Snapshot.render(view)
@@ -112,9 +112,9 @@ struct PanelRenderTests {
     func ghostVersusNoPR() {
         // A ghost is a PR without a worktree, so it has CI and a number. The
         // hollow dot means the opposite thing: a branch with no PR at all.
-        let prs = [SampleData.pr(1, head: "suraj/calm/first"),
-                   SampleData.pr(2, head: "suraj/calm/ghost", base: "suraj/calm/first")]
-        let (ghostView, store) = Snapshot.section(worktrees: [SampleData.worktree("suraj/calm/first")],
+        let prs = [SampleData.pr(1, head: "calm/first"),
+                   SampleData.pr(2, head: "calm/ghost", base: "calm/first")]
+        let (ghostView, store) = Snapshot.section(worktrees: [SampleData.worktree("calm/first")],
                                                   pullRequests: prs)
         #expect(store.stacks[0].nodeCount == 2, "the ghost is in the tree")
         let ghost = Snapshot.render(ghostView)
@@ -124,10 +124,10 @@ struct PanelRenderTests {
                 "and its CI dot, because a ghost has a PR")
 
         let (localOnly, _) = Snapshot.section(
-            worktrees: [SampleData.worktree("suraj/calm/first"),
-                        SampleData.worktree("suraj/calm/second", commitsAboveTrunk: 6,
-                                            contains: ["suraj/calm/first"])],
-            pullRequests: [SampleData.pr(1, head: "suraj/calm/first")]
+            worktrees: [SampleData.worktree("calm/first"),
+                        SampleData.worktree("calm/second", commitsAboveTrunk: 6,
+                                            contains: ["calm/first"])],
+            pullRequests: [SampleData.pr(1, head: "calm/first")]
         )
         let bare = Snapshot.render(localOnly)
         #expect(bare.count(dotColumn.intersect(rowBand(1))) { $0 != .none } == 0,
@@ -141,7 +141,7 @@ struct PanelRenderTests {
     @Test("collapsing a stack hides its rows but keeps its health visible")
     func collapsedStackKeepsHealth() {
         var prs = SampleData.healthyPullRequests
-        prs[2] = SampleData.pr(3, head: "suraj/calm/third", base: "suraj/calm/second", ci: .failure)
+        prs[2] = SampleData.pr(3, head: "calm/third", base: "calm/second", ci: .failure)
         let (open, _) = Snapshot.section(worktrees: SampleData.healthyWorktrees, pullRequests: prs)
         let (shut, _) = Snapshot.section(worktrees: SampleData.healthyWorktrees,
                                          pullRequests: prs, collapsed: true)

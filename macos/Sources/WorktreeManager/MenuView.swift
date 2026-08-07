@@ -2,7 +2,7 @@ import SwiftUI
 
 enum Mode: Equatable {
     case list
-    case create(base: String?) // nil => latest origin/main
+    case create(base: String?) // nil => the latest trunk
     case addExisting(branch: String?) // non-nil => prefilled from a ghost row
     case confirmDelete(Worktree)
     // A subtree opened from a "N more branches below" button, so arbitrarily
@@ -17,7 +17,8 @@ struct MenuView: View {
     @State private var collapsedStacks: Set<String> = []
     @Environment(\.openSettings) private var openSettings
     @AppStorage(SettingsKeys.featureAddExisting) private var featureAddExisting = true
-    @AppStorage(SettingsKeys.featureOpenInStudio) private var featureStudio = true
+    // Read so the panel redraws the moment a repository is chosen in Settings.
+    @AppStorage(SettingsKeys.repoPath) private var repoPath = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -57,6 +58,18 @@ struct MenuView: View {
 
     @ViewBuilder
     private var content: some View {
+        if repoPath.isEmpty {
+            NoRepositoryView {
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                openSettings()
+            }
+        } else {
+            modeContent
+        }
+    }
+
+    @ViewBuilder
+    private var modeContent: some View {
         switch mode {
         case .list:
             StackListView(
@@ -88,13 +101,35 @@ struct MenuView: View {
 
 }
 
+// First run: there is nothing to show until the app is told which checkout to
+// manage, and a blank list would read as "no worktrees" instead.
+struct NoRepositoryView: View {
+    let onOpenSettings: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("No repository yet")
+                .font(.headline)
+            Text("Point Worktree Manager at a git checkout and it will show that repo's worktrees as the PR stacks they form.")
+                .font(Typo.meta)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Open Settings…", action: onOpenSettings)
+                .controlSize(.small)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Metrics.gutter)
+    }
+}
+
 // MARK: - Panel chrome
 
 // Split out of MenuView so `--render` can shoot the whole panel, chrome
 // included, instead of the list alone.
 struct PanelHeader: View {
     @EnvironmentObject var store: Store
-    @AppStorage(SettingsKeys.featureOpenInStudio) private var featureStudio = true
+    @AppStorage(SettingsKeys.featureOpenInEditor) private var featureEditor = true
+    @AppStorage(SettingsKeys.editorApp) private var editorApp = EditorApps.selected
 
     var body: some View {
         HStack(spacing: 6) {
@@ -116,9 +151,10 @@ struct PanelHeader: View {
             Text(freshness)
                 .font(Typo.meta)
                 .foregroundStyle(.tertiary)
-            if featureStudio {
-                AppIconButton(icon: AppIcons.studio, fallbackIcon: "hammer",
-                              help: "Open main repo in Android Studio") {
+            if featureEditor {
+                AppIconButton(icon: AppIcons.app(named: editorApp, in: EditorApps.self),
+                              fallbackIcon: "hammer",
+                              help: "Open the repository in \(editorApp)") {
                     Task { await store.openMainRepo() }
                 }
             }
@@ -284,28 +320,22 @@ struct PRErrorBar: View {
     }
 }
 
-// Row buttons for external apps, using the installed app's real icon
-// (SF Symbols has no Android/cmux glyphs); fall back to a symbol if missing.
+// Row buttons for external apps, using the installed app's real icon (SF Symbols
+// has no editor/terminal glyphs); fall back to a symbol if missing.
 @MainActor
 enum AppIcons {
-    static let studio: NSImage? = {
-        let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.android.studio")
-            ?? URL(fileURLWithPath: "/Applications/\(Config.studioApp).app")
-        return icon(forAppAt: url)
-    }()
-
-    // Icon for whichever terminal app is selected in Settings.
-    static func terminal(named name: String) -> NSImage? {
-        if let cached = terminalCache[name] { return cached }
-        let bundleID = TerminalApps.known.first { $0.name == name }?.bundleID
-        let url = bundleID.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
+    // Icon for whichever terminal or editor is selected in Settings.
+    static func app<Apps: ExternalApps>(named name: String, in _: Apps.Type) -> NSImage? {
+        if let cached = cache[name] { return cached }
+        let url = Apps.bundleID(named: name)
+            .flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
             ?? URL(fileURLWithPath: "/Applications/\(name).app")
         let icon = icon(forAppAt: url)
-        terminalCache[name] = icon
+        cache[name] = icon
         return icon
     }
 
-    private static var terminalCache: [String: NSImage?] = [:]
+    private static var cache: [String: NSImage?] = [:]
 
     private static func icon(forAppAt url: URL) -> NSImage? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }

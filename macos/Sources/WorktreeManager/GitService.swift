@@ -6,13 +6,21 @@ import Foundation
 // result so callers can surface git's own messages.
 enum GitService {
 
-    static func run(_ executable: String, _ args: [String], cwd: String? = nil) async -> CommandResult {
+    static func run(
+        _ executable: String,
+        _ args: [String],
+        cwd: String? = nil,
+        env: [String: String] = [:]
+    ) async -> CommandResult {
         await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: executable)
                 process.arguments = args
                 if let cwd { process.currentDirectoryURL = URL(fileURLWithPath: cwd) }
+                if !env.isEmpty {
+                    process.environment = ProcessInfo.processInfo.environment.merging(env) { _, new in new }
+                }
                 let out = Pipe()
                 let err = Pipe()
                 process.standardOutput = out
@@ -43,6 +51,7 @@ enum GitService {
     // MARK: - List
 
     static func listWorktrees() async -> [Worktree] {
+        guard Config.isConfigured else { return [] }
         let res = await git(["worktree", "list", "--porcelain"])
         var entries: [(path: String, branch: String?)] = []
         var curPath: String?
@@ -166,10 +175,11 @@ enum GitService {
     // MARK: - Trunk freshness
 
     // Merged-branch detection and stack roots are measured against the local
-    // origin/main ref, which is only as fresh as the last fetch — a stale one
+    // trunk ref, which is only as fresh as the last fetch — a stale one
     // under-reports merges. Run before a full refresh, not on every menu open.
     static func fetchTrunk() async {
-        _ = await git(["fetch", "origin", Config.trunkRef.shortRef, "--quiet"])
+        guard Config.isConfigured else { return }
+        _ = await git(["fetch", "origin", Config.mainBranch, "--quiet"])
     }
 
     // A branch's agent artifacts: the tracker feature dir and the ship run dir,
@@ -180,10 +190,11 @@ enum GitService {
         let fm = FileManager.default
         var ticket: String?
         var shipRun: String?
+        let trackerDir = Config.trackerScratchDir
         for seg in branch.split(separator: "/").map(String.init).reversed() {
             var isDir: ObjCBool = false
-            if ticket == nil {
-                let p = Config.trackerScratchDir + "/" + seg
+            if ticket == nil, !trackerDir.isEmpty {
+                let p = trackerDir + "/" + seg
                 if fm.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue { ticket = p }
             }
             if shipRun == nil {
@@ -195,7 +206,7 @@ enum GitService {
     }
 
     private static func determinBaseRef(branch: String?, cwd: String) async -> String {
-        guard let branch = branch else { return "origin/main" }
+        guard let branch = branch else { return Config.trunkRef }
         let checkRef = await git(["rev-parse", "-q", "--verify", "origin/\(branch)@{upstream}"], cwd: cwd)
         if checkRef.code == 0 {
             return "origin/\(branch)"
@@ -204,16 +215,17 @@ enum GitService {
         if checkRemote.code == 0 {
             return "origin/\(branch)"
         }
-        return "origin/main"
+        return Config.trunkRef
     }
 
     // MARK: - Base branches
 
     // Start-point candidates for a new worktree: origin's remote-tracking
-    // branches (as of the last fetch) plus every local branch, with
-    // origin/main pinned first. Remote refs come before locals because that's
-    // what a new worktree usually branches off.
+    // branches (as of the last fetch) plus every local branch, with the trunk
+    // pinned first. Remote refs come before locals because that's what a new
+    // worktree usually branches off.
     static func listBaseBranches() async -> [String] {
+        guard Config.isConfigured else { return [] }
         async let remotesRes = git(["for-each-ref", "--format=%(refname)", "refs/remotes/origin"])
         async let localsRes = git(["for-each-ref", "--format=%(refname)", "refs/heads"])
         let (remotes, locals) = await (remotesRes, localsRes)
@@ -240,15 +252,22 @@ enum GitService {
     // MARK: - Create / add existing (delegates to the shell scripts)
 
     static func createWorktree(name: String, base: String?) async -> OpOutcome {
+        guard Config.isConfigured else { return unconfigured }
         var args = [Config.createScript, name]
         if let base, !base.isEmpty { args.append(base) }
-        let res = await run("/bin/bash", args)
+        let res = await run("/bin/bash", args, env: Config.shellEnvironment)
         return scriptOutcome(res, fallbackError: "create failed")
     }
 
     static func addExistingWorktree(branch: String) async -> OpOutcome {
-        let res = await run("/bin/bash", [Config.addExistingScript, branch])
+        guard Config.isConfigured else { return unconfigured }
+        let res = await run("/bin/bash", [Config.addExistingScript, branch],
+                            env: Config.shellEnvironment)
         return scriptOutcome(res, fallbackError: "add failed")
+    }
+
+    private static var unconfigured: OpOutcome {
+        OpOutcome(ok: false, message: "no repository set — choose one in Settings")
     }
 
     private static func scriptOutcome(_ res: CommandResult, fallbackError: String) -> OpOutcome {
@@ -290,9 +309,9 @@ enum GitService {
 
     // MARK: - Pull latest
 
-    // Fetch the latest origin/main and merge it into the worktree's branch.
-    // On conflict the merge is left in progress (resolve in Android Studio /
-    // abort with `git merge --abort`) and we report it so the UI can warn.
+    // Fetch the latest trunk and merge it into the worktree's branch. On
+    // conflict the merge is left in progress (resolve in your editor / abort
+    // with `git merge --abort`) and we report it so the UI can warn.
     static func pullLatest(path: String) async -> OpOutcome {
         guard path.hasPrefix(Config.worktreeDir + "/") else {
             return OpOutcome(ok: false, message: "refusing to pull: path is not a managed worktree")
@@ -306,16 +325,17 @@ enum GitService {
             return OpOutcome(ok: false, message: "a merge is already in progress — resolve or abort it first")
         }
 
-        let fetch = await git(["fetch", "origin", "main"], cwd: path)
+        let fetch = await git(["fetch", "origin", Config.mainBranch], cwd: path)
         if fetch.code != 0 {
             let msg = fetch.stderr.isEmpty ? "git fetch failed" : fetch.stderr
             return OpOutcome(ok: false, message: msg.trimmingCharacters(in: .whitespacesAndNewlines))
         }
 
-        let merge = await git(["merge", "--no-edit", "origin/main"], cwd: path)
+        let merge = await git(["merge", "--no-edit", Config.trunkRef], cwd: path)
         if merge.code == 0 {
             let upToDate = merge.stdout.range(of: "Already up to date", options: .caseInsensitive) != nil
-            return OpOutcome(ok: true, message: upToDate ? "Already up to date." : "Merged latest origin/main.")
+            return OpOutcome(ok: true,
+                             message: upToDate ? "Already up to date." : "Merged latest \(Config.trunkRef).")
         }
 
         let unmerged = await git(["diff", "--name-only", "--diff-filter=U"], cwd: path)
@@ -325,7 +345,7 @@ enum GitService {
             return OpOutcome(
                 ok: false,
                 message: "Merge conflict in \(files.count) file\(files.count == 1 ? "" : "s")"
-                    + " — resolve in Android Studio (or run `git merge --abort`):\n"
+                    + " — resolve it in your editor (or run `git merge --abort`):\n"
                     + files.joined(separator: "\n"),
                 conflict: true
             )

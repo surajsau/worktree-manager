@@ -4,6 +4,14 @@ import SwiftUI
 @main
 enum Entry {
     static func main() async {
+        // The debug hooks read git, and outside the .app bundle they can't see
+        // the settings — say so instead of printing an empty tree.
+        let readsRepo = ["--list", "--stacks"].contains { CommandLine.arguments.contains($0) }
+        if readsRepo, !Config.isConfigured {
+            print("no repository configured — set one in Settings, "
+                  + "or run with WORKTREE_MANAGER_REPO=/path/to/repo")
+            return
+        }
         // Debug/verification hook: print the worktree list and exit, no UI.
         if CommandLine.arguments.contains("--list") {
             for wt in await GitService.listWorktrees() {
@@ -67,6 +75,13 @@ enum Entry {
         if let i = CommandLine.arguments.firstIndex(of: "--render"),
            i + 1 < CommandLine.arguments.count {
             await renderStackList(to: CommandLine.arguments[i + 1])
+            return
+        }
+        // Same, for the settings window — the other half of the UI, and equally
+        // unreachable from a screenshot tool.
+        if let i = CommandLine.arguments.firstIndex(of: "--render-settings"),
+           i + 1 < CommandLine.arguments.count {
+            await MainActor.run { renderSettings(to: CommandLine.arguments[i + 1]) }
             return
         }
         // Debug/verification hook: open a cmux tab for a path and exit, no UI.
@@ -156,6 +171,45 @@ enum Entry {
         .frame(width: Metrics.panelWidth)
         .background(dark ? Color(red: 0.13, green: 0.13, blue: 0.14) : Color(nsColor: .windowBackgroundColor))
 
+        render(view, to: path,
+               note: "\(store.stacks.count) stacks, \(AvatarCache.shared.images.count)/\(urls.count) avatars")
+    }
+
+    // Settings is a Form of real AppKit controls, and ImageRenderer draws those
+    // as blank space — so this puts it in an offscreen window and asks the view
+    // hierarchy itself for its pixels.
+    @MainActor
+    private static func renderSettings(to path: String) {
+        if CommandLine.arguments.contains("--dark") {
+            NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
+        }
+        let hosting = NSHostingView(rootView: SettingsView())
+        hosting.frame = NSRect(origin: .zero, size: hosting.fittingSize)
+        let window = NSWindow(contentRect: hosting.frame, styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView = hosting
+        window.layoutIfNeeded()
+        // SwiftUI commits layout on the run loop, not on layoutIfNeeded().
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        guard let view = window.contentView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            print("render failed")
+            return
+        }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        guard let png = rep.representation(using: .png, properties: [:]) else {
+            print("render failed")
+            return
+        }
+        try? png.write(to: URL(fileURLWithPath: path))
+        print("wrote \(path) (\(Int(view.bounds.width))x\(Int(view.bounds.height)))")
+    }
+
+    @MainActor
+    private static func render(_ view: some View, to path: String, note: String = "") {
+        if CommandLine.arguments.contains("--dark") {
+            NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
+        }
         let renderer = ImageRenderer(content: view)
         renderer.scale = 2
         guard let image = renderer.nsImage,
@@ -166,7 +220,8 @@ enum Entry {
             return
         }
         try? png.write(to: URL(fileURLWithPath: path))
-        print("wrote \(path) (\(Int(image.size.width))x\(Int(image.size.height)), \(store.stacks.count) stacks, \(AvatarCache.shared.images.count)/\(urls.count) avatars)")
+        let size = "\(Int(image.size.width))x\(Int(image.size.height))"
+        print("wrote \(path) (\(size)\(note.isEmpty ? "" : ", " + note))")
     }
 
     // Mirrors StackLayout: the mainline prints flat, each fork prints under a
@@ -217,6 +272,9 @@ struct WorktreeManagerApp: App {
         // Menu bar app: no Dock icon even when launched outside the bundle
         // (Info.plist's LSUIElement covers the bundled case).
         NSApplication.shared.setActivationPolicy(.accessory)
+        // So a shell run of the scripts agrees with the app even if the config
+        // file was never written (fresh install) or was edited by hand.
+        Config.writeShellConfig()
     }
 
     var body: some Scene {

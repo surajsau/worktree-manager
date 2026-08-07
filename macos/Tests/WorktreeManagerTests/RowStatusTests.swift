@@ -9,9 +9,9 @@ import Testing
 struct RowStatusTests {
 
     private func node(
-        _ ref: String = "suraj/feature/thing",
-        wt: Worktree? = SampleData.worktree("suraj/feature/thing"),
-        pr: PullRequest? = SampleData.pr(1, head: "suraj/feature/thing")
+        _ ref: String = "feature/thing",
+        wt: Worktree? = SampleData.worktree("feature/thing"),
+        pr: PullRequest? = SampleData.pr(1, head: "feature/thing")
     ) -> StackNode {
         StackNode(ref: ref, worktree: wt, pr: pr)
     }
@@ -32,7 +32,7 @@ struct RowStatusTests {
 
     @Test("uncommitted work colours the name and shows counts")
     func dirtyWorktree() {
-        let wt = SampleData.worktree("suraj/feature/thing", dirty: 12, unpushed: 2)
+        let wt = SampleData.worktree("feature/thing", dirty: 12, unpushed: 2)
         let s = status(node(wt: wt))
         #expect(s.nameState == .dirty)
         #expect(s.dirtyCount == 12)
@@ -42,7 +42,7 @@ struct RowStatusTests {
 
     @Test("a half-done local merge offers Resolve")
     func localMergeConflict() {
-        let wt = SampleData.worktree("suraj/feature/thing", dirty: 4, conflicts: true)
+        let wt = SampleData.worktree("feature/thing", dirty: 4, conflicts: true)
         let s = status(node(wt: wt))
         #expect(s.nameState == .conflicted, "conflict beats dirty on the name")
         #expect(s.conflict == .mergeInProgress)
@@ -53,7 +53,7 @@ struct RowStatusTests {
 
     @Test("a PR conflicting with its base offers Resolve and warns")
     func prConflictsWithBase() {
-        let pr = SampleData.pr(2, head: "suraj/feature/thing", mergeable: .conflicting)
+        let pr = SampleData.pr(2, head: "feature/thing", mergeable: .conflicting)
         let s = status(node(pr: pr))
         #expect(s.conflict == .prVsBase)
         #expect(s.showsConflictWarning)
@@ -63,8 +63,8 @@ struct RowStatusTests {
 
     @Test("a conflicting PR on a dirty tree warns that the merge won't start")
     func prConflictOnDirtyTree() {
-        let pr = SampleData.pr(2, head: "suraj/feature/thing", mergeable: .conflicting)
-        let wt = SampleData.worktree("suraj/feature/thing", dirty: 3)
+        let pr = SampleData.pr(2, head: "feature/thing", mergeable: .conflicting)
+        let wt = SampleData.worktree("feature/thing", dirty: 3)
         let s = status(node(wt: wt, pr: pr))
         #expect(s.blockedByDirtyTree)
         #expect(s.showsResolveChip, "the chip still shows, with the warning in its tooltip")
@@ -72,7 +72,7 @@ struct RowStatusTests {
 
     @Test("Resolve stays hidden without cmux")
     func resolveNeedsCmux() {
-        let wt = SampleData.worktree("suraj/feature/thing", conflicts: true)
+        let wt = SampleData.worktree("feature/thing", conflicts: true)
         let s = status(node(wt: wt), resolveEnabled: false)
         #expect(!s.showsResolveChip)
         #expect(s.conflict == .mergeInProgress, "the conflict itself is still reported")
@@ -81,7 +81,7 @@ struct RowStatusTests {
     @Test("an unknown mergeable state is not a conflict")
     func unknownMergeability() {
         // GitHub returns UNKNOWN while it runs the background merge test.
-        let pr = SampleData.pr(3, head: "suraj/feature/thing", mergeable: .unknown)
+        let pr = SampleData.pr(3, head: "feature/thing", mergeable: .unknown)
         let s = status(node(pr: pr))
         #expect(s.conflict == nil, "UNKNOWN must not read as CONFLICTING")
         #expect(!s.showsConflictWarning)
@@ -89,7 +89,7 @@ struct RowStatusTests {
 
     @Test("a ghost row says No worktree and offers nothing to resolve")
     func ghostRow() {
-        let pr = SampleData.pr(4, head: "suraj/feature/thing", mergeable: .conflicting)
+        let pr = SampleData.pr(4, head: "feature/thing", mergeable: .conflicting)
         let s = status(node(wt: nil, pr: pr))
         #expect(s.nameState == .ghost)
         #expect(s.placeholder == "No worktree")
@@ -108,7 +108,7 @@ struct RowStatusTests {
     @Test("bot chatter alone shows nothing")
     func botsStaySilent() {
         // Four bots comment on every PR in this repo; a count lit all 22 rows.
-        let pr = SampleData.pr(5, head: "suraj/feature/thing",
+        let pr = SampleData.pr(5, head: "feature/thing",
                                participants: [SampleData.bot("size-report", comments: 3),
                                               SampleData.bot("danger", comments: 1)])
         #expect(status(node(pr: pr)).comments == .none)
@@ -116,14 +116,14 @@ struct RowStatusTests {
 
     @Test("your own comments show nothing")
     func viewerCommentsStaySilent() {
-        let pr = SampleData.pr(6, head: "suraj/feature/thing",
+        let pr = SampleData.pr(6, head: "feature/thing",
                                participants: [SampleData.person("me", comments: 4, isViewer: true)])
         #expect(status(node(pr: pr)).comments == .none, "nothing there is waiting on you")
     }
 
     @Test("a human comment gets the quiet bubble")
     func humanCommentBubble() {
-        let pr = SampleData.pr(7, head: "suraj/feature/thing",
+        let pr = SampleData.pr(7, head: "feature/thing",
                                participants: [SampleData.person("reviewer", comments: 2),
                                               SampleData.bot("size-report", comments: 9)])
         #expect(status(node(pr: pr)).comments == .bubble, "bubble, no avatars")
@@ -134,7 +134,7 @@ struct RowStatusTests {
         let reviewer = SampleData.person("reviewer", unresolved: 2, comments: 2)
         let bot = SampleData.bot("lint-bot", unresolved: 1)
         let chatty = SampleData.bot("size-report", comments: 5)
-        let pr = SampleData.pr(8, head: "suraj/feature/thing",
+        let pr = SampleData.pr(8, head: "feature/thing",
                                unresolved: 3, participants: [reviewer, bot, chatty])
         guard case .unresolved(let threads, let people) = status(node(pr: pr)).comments else {
             Issue.record("expected the unresolved case")
@@ -154,13 +154,13 @@ struct RowStatusTests {
         (ReviewState.none, RowStatus.Review.none),
     ])
     func reviewBadges(state: ReviewState, expected: RowStatus.Review) {
-        let pr = SampleData.pr(9, head: "suraj/feature/thing", review: state)
+        let pr = SampleData.pr(9, head: "feature/thing", review: state)
         #expect(status(node(pr: pr)).review == expected)
     }
 
     @Test("draft is carried through")
     func draftFlag() {
-        let pr = SampleData.pr(10, head: "suraj/feature/thing", draft: true)
+        let pr = SampleData.pr(10, head: "feature/thing", draft: true)
         let s = status(node(pr: pr))
         #expect(s.isDraft)
         #expect(!s.isQuiet)

@@ -44,11 +44,11 @@ struct Stack: Identifiable, Sendable {
     var needsAttention: Bool { root.needsAttention }
 
     // What the stack is called: the branch folder of the bottom branch, e.g.
-    // "preview" for suraj/preview/enable-device-flag. That is the piece of work
-    // the whole stack belongs to, where the leaf only names its first slice —
-    // and it stays put as slices are added on top. Branches with no folder
-    // (suraj/realtime-player-task-2) have nothing else to go on, so they keep
-    // the leaf.
+    // "preview" for preview/enable-device-flag (any configured branch prefix
+    // dropped first). That is the piece of work the whole stack belongs to,
+    // where the leaf only names its first slice — and it stays put as slices are
+    // added on top. Branches with no folder (realtime-player-task-2) have
+    // nothing else to go on, so they keep the leaf.
     var title: String {
         var segments = root.ref
         if segments.hasPrefix(Config.branchPrefix) {

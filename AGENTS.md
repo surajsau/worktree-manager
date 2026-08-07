@@ -1,6 +1,6 @@
 # worktree-manager
 
-A native macOS menu bar app (`macos/`, SwiftUI) over a few shell scripts, showing git worktrees for **abema-androidtv** as the GitHub PR stacks they form. The app is the only frontend — the Node web app that used to live here was removed; `git log -- server.js` if you need it.
+A native macOS menu bar app (`macos/`, SwiftUI) over a few shell scripts, showing one repository's git worktrees as the GitHub PR stacks they form. Which repository — plus its worktree folder, main branch and branch prefix — is a setting, never a constant: `Config` in `Models.swift` reads UserDefaults, and `config.sh` gives the scripts the same values. The app is the only frontend — the Node web app that used to live here was removed; `git log -- server.js` if you need it.
 
 ## Working here
 
@@ -14,6 +14,7 @@ make render   # render the panel from fake data, light + dark, and open them
 - **Look at a render before calling a UI change done.** A menu bar dropdown can't be screenshotted without accessibility access, so the app renders itself (`--render out.png [--dark|--demo|--forks|--expand-first]`). Check both appearances.
 - **Anything touching git, GitHub, the disk or another app goes through a repository protocol** (`Repositories.swift`), so the panel stays renderable and testable from `SampleData.swift`.
 - **Row logic belongs in `RowStatus.swift`**, not in the view that draws it.
+- **Nothing repo-specific gets hardcoded** — no repo path, branch name, prefix or app name in source. It goes through `Config`/`SettingsKeys` and gets a control in `SettingsView`; if a script needs it too, add it to `config.sh` and `Config.shellEnvironment`.
 
 ## Agent skills
 

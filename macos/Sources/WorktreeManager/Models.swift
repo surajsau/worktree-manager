@@ -1,14 +1,64 @@
 import Foundation
 
+// Which repository the app manages is a setting, not a constant: one build
+// serves any checkout. The values live in UserDefaults (written by the Settings
+// window) and are mirrored into a shell config file so the scripts — which can
+// also be run straight from a terminal — see exactly what the app sees.
 enum Config {
-    static let mainRepo = "/Users/s24270/Documents/Github/abema-androidtv"
-    static let worktreeDir = "/Users/s24270/Documents/Github/worktrees"
-    static let branchPrefix = "suraj/"
-    static let defaultBase = "origin/main"
+
+    // MARK: - Repository (set in Settings)
+
+    // Empty until Settings names a repository; the panel says so rather than
+    // running git against nothing.
+    static var mainRepo: String { setting(SettingsKeys.repoPath, env: "WORKTREE_MANAGER_REPO") ?? "" }
+    static var isConfigured: Bool { !mainRepo.isEmpty }
+
+    static var worktreeDir: String {
+        setting(SettingsKeys.worktreeDir, env: "WORKTREE_MANAGER_WORKTREE_DIR") ?? defaultWorktreeDir
+    }
+
+    // A sibling of the checkout, which is where a repo's worktrees usually go —
+    // inside it they would show up as untracked files.
+    static var defaultWorktreeDir: String {
+        mainRepo.isEmpty
+            ? NSHomeDirectory() + "/worktrees"
+            : (mainRepo as NSString).deletingLastPathComponent + "/worktrees"
+    }
+
+    // Put in front of every branch the create flow makes (e.g. "alex/"). Empty
+    // is a real choice, so an exported empty prefix counts as one.
+    static var branchPrefix: String {
+        ProcessInfo.processInfo.environment["WORKTREE_MANAGER_BRANCH_PREFIX"]
+            ?? UserDefaults.standard.string(forKey: SettingsKeys.branchPrefix)
+            ?? ""
+    }
+
+    static var mainBranch: String {
+        setting(SettingsKeys.mainBranch, env: "WORKTREE_MANAGER_MAIN_BRANCH") ?? "main"
+    }
+
     // The ref every stack is measured against: a branch with no commits outside
     // it is fully merged, and stack roots are the branches that sit directly on
     // it. Kept separate from defaultBase so the two can diverge later.
-    static let trunkRef = "origin/main"
+    static var trunkRef: String { "origin/" + mainBranch }
+    static var defaultBase: String { trunkRef }
+
+    // The environment wins over the stored setting, which is what makes the
+    // debug hooks (`--list`, `--stacks`) usable from a plain `swift run`: run
+    // outside the .app bundle, UserDefaults is a different domain and has none
+    // of the app's settings in it.
+    private static func setting(_ key: String, env: String) -> String? {
+        nonEmpty(ProcessInfo.processInfo.environment[env])
+            ?? nonEmpty(UserDefaults.standard.string(forKey: key))
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed?.isEmpty ?? true) ? nil : trimmed
+    }
+
+    // MARK: - Fixed
+
     static let prPollInterval: TimeInterval = 30 * 60
     // gh is not on a login item's PATH, so it is resolved by absolute path.
     static let ghCandidates = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
@@ -18,20 +68,72 @@ enum Config {
     static var cacheDir: String {
         NSHomeDirectory() + "/Library/Caches/WorktreeManager"
     }
-    // The create/add logic lives in standalone shell scripts (shared with the
-    // web server and Claude skills) — the app shells out to them.
-    static let scriptsDir = "/Users/s24270/Documents/Github/worktree-manager"
-    static var createScript: String { scriptsDir + "/create-worktree.sh" }
-    static var addExistingScript: String { scriptsDir + "/add-existing-worktree.sh" }
-    static let studioApp = "Android Studio"
     static let cmuxBundleID = "com.cmuxterm.app"
     // Typed into a fresh cmux workspace at the conflicted worktree. cmux runs it
     // through an interactive login shell, so shell aliases (`opus`) resolve.
     static let resolveConflictsCommand = "opus /resolve-conflicts"
     // Agent-system artifacts: the local-markdown issue tracker and ship-skill
-    // runs. Rows surface these; delete never touches them.
-    static let trackerScratchDir = NSHomeDirectory() + "/tmp/abema-androidtv-agents/scratch"
+    // runs. Rows surface these; delete never touches them. The tracker path is
+    // per-repo, and mirrors what agent-artifacts.sh derives.
+    static var trackerScratchDir: String {
+        let repo = (mainRepo as NSString).lastPathComponent
+        return repo.isEmpty ? "" : NSHomeDirectory() + "/tmp/\(repo)-agents/scratch"
+    }
     static let shipRunsDir = NSHomeDirectory() + "/tmp/ship"
+
+    // MARK: - Shell scripts
+
+    // The create/add logic lives in standalone shell scripts (usable from a
+    // terminal or a Claude skill) — the app shells out to them. build-app.sh
+    // copies them into the bundle; a `swift run` from the checkout finds them
+    // next to the package instead.
+    static var scriptsDir: String {
+        if let dir = ProcessInfo.processInfo.environment["WORKTREE_MANAGER_HOME"] { return dir }
+        if let bundled = Bundle.main.resourcePath,
+           FileManager.default.fileExists(atPath: bundled + "/create-worktree.sh") {
+            return bundled
+        }
+        return FileManager.default.currentDirectoryPath
+    }
+    static var createScript: String { scriptsDir + "/create-worktree.sh" }
+    static var addExistingScript: String { scriptsDir + "/add-existing-worktree.sh" }
+
+    // What the scripts read when the app invokes them. Passed explicitly rather
+    // than left to the config file, so a setting changed a second ago wins.
+    static var shellEnvironment: [String: String] {
+        [
+            "WORKTREE_MANAGER_REPO": mainRepo,
+            "WORKTREE_MANAGER_WORKTREE_DIR": worktreeDir,
+            "WORKTREE_MANAGER_BRANCH_PREFIX": branchPrefix,
+            "WORKTREE_MANAGER_MAIN_BRANCH": mainBranch,
+        ]
+    }
+
+    static var shellConfigFile: String {
+        let base = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"]
+            ?? NSHomeDirectory() + "/.config"
+        return base + "/worktree-manager/config"
+    }
+
+    // Keeps the scripts usable on their own: run from a terminal they have no
+    // app around to hand them the settings, so the settings are written here
+    // every time they change.
+    static func writeShellConfig() {
+        let body = shellEnvironment.keys.sorted().map { key in
+            "\(key)='\(shellEnvironment[key]!.replacingOccurrences(of: "'", with: "'\\''"))'"
+        }.joined(separator: "\n")
+        let contents = """
+        # Written by Worktree Manager's Settings window — edit it there.
+        # Sourced by create-worktree.sh, add-existing-worktree.sh and their
+        # helpers; an exported variable of the same name wins over this file.
+        \(body)
+
+        """
+        let url = URL(fileURLWithPath: shellConfigFile)
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? contents.write(to: url, atomically: true, encoding: .utf8)
+    }
 }
 
 struct Worktree: Identifiable, Equatable, Sendable {
@@ -54,8 +156,8 @@ struct Worktree: Identifiable, Equatable, Sendable {
     // branch merged, or it was just created and has no work yet — and the
     // commit graph can't tell them apart. This can.
     let hasOwnCommits: Bool
-    // Commits the trunk has that this branch doesn't — i.e. what "Pull main"
-    // would bring in. Distinct from `behind`, which is measured against the
+    // Commits the trunk has that this branch doesn't — i.e. what the row's
+    // "Pull" button would bring in. Distinct from `behind`, measured against the
     // branch's own remote when one exists.
     let behindTrunk: Int
     let tip: String

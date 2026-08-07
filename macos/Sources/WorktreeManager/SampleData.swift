@@ -93,40 +93,40 @@ enum SampleData {
     // carrying local work so the prune has something to skip.
     static var demoWorktrees: [Worktree] {
         [
-            worktree("suraj/preview/enable-device-flag", behindTrunk: 117, commitsAboveTrunk: 2),
-            worktree("suraj/preview/spot-card-presenter", commitsAboveTrunk: 4),
-            worktree("suraj/preview/memory-management", dirty: 3, commitsAboveTrunk: 6),
-            worktree("suraj/preview/coordinator-rewrite", commitsAboveTrunk: 8,
-                     contains: ["suraj/preview/memory-management"]),
-            worktree("suraj/shared-player/screen-restart-tests", commitsAboveTrunk: 2),
-            worktree("suraj/shared-player/activity-cleanup", dirty: 12, conflicts: true,
+            worktree("preview/enable-device-flag", behindTrunk: 117, commitsAboveTrunk: 2),
+            worktree("preview/spot-card-presenter", commitsAboveTrunk: 4),
+            worktree("preview/memory-management", dirty: 3, commitsAboveTrunk: 6),
+            worktree("preview/coordinator-rewrite", commitsAboveTrunk: 8,
+                     contains: ["preview/memory-management"]),
+            worktree("shared-player/screen-restart-tests", commitsAboveTrunk: 2),
+            worktree("shared-player/activity-cleanup", dirty: 12, conflicts: true,
                      unpushed: 1, commitsAboveTrunk: 5),
-            worktree("suraj/episode-list/anchored-series", commitsAboveTrunk: 3),
-            worktree("suraj/merged/tab-frame", commitsAboveTrunk: 0),
-            worktree("suraj/merged/focus-fix", dirty: 2, commitsAboveTrunk: 0),
+            worktree("episode-list/anchored-series", commitsAboveTrunk: 3),
+            worktree("merged/tab-frame", commitsAboveTrunk: 0),
+            worktree("merged/focus-fix", dirty: 2, commitsAboveTrunk: 0),
         ]
     }
 
     static var demoPullRequests: [PullRequest] {
         [
-            pr(18565, head: "suraj/preview/enable-device-flag",
+            pr(18565, head: "preview/enable-device-flag",
                title: "Add the device flag behind a preview toggle",
                unresolved: 1, participants: [person("a-reviewer", unresolved: 1)], updatedMinutesAgo: 5),
-            pr(18566, head: "suraj/preview/spot-card-presenter", base: "suraj/preview/enable-device-flag",
+            pr(18566, head: "preview/spot-card-presenter", base: "preview/enable-device-flag",
                ci: .failure, review: .approved,
                participants: [bot("size-report"), person("a-reviewer", comments: 2)], updatedMinutesAgo: 20),
-            pr(18576, head: "suraj/preview/memory-management", base: "suraj/preview/spot-card-presenter",
+            pr(18576, head: "preview/memory-management", base: "preview/spot-card-presenter",
                ci: .pending, draft: true, updatedMinutesAgo: 45),
             // No PR for coordinator-rewrite: its parent comes from the commit graph.
-            pr(18580, head: "suraj/shared-player/screen-restart-tests", updatedMinutesAgo: 10),
-            pr(18584, head: "suraj/shared-player/activity-cleanup",
-               base: "suraj/shared-player/screen-restart-tests",
+            pr(18580, head: "shared-player/screen-restart-tests", updatedMinutesAgo: 10),
+            pr(18584, head: "shared-player/activity-cleanup",
+               base: "shared-player/screen-restart-tests",
                mergeable: .conflicting, review: .changesRequested, updatedMinutesAgo: 30),
             // Ghost: a PR whose branch isn't checked out here. Without it the
             // chain below would break in two.
-            pr(18595, head: "suraj/shared-player/move-liveevent", base: "suraj/shared-player/activity-cleanup",
+            pr(18595, head: "shared-player/move-liveevent", base: "shared-player/activity-cleanup",
                draft: true, updatedMinutesAgo: 60),
-            pr(18572, head: "suraj/episode-list/anchored-series", ci: .pending, draft: true,
+            pr(18572, head: "episode-list/anchored-series", ci: .pending, draft: true,
                unresolved: 2, participants: [bot("lint-bot", unresolved: 2)], updatedMinutesAgo: 90),
         ]
     }
@@ -135,19 +135,19 @@ enum SampleData {
     // baseline for "a quiet panel carries no warm colour".
     static var healthyWorktrees: [Worktree] {
         [
-            worktree("suraj/calm/first", commitsAboveTrunk: 2),
-            worktree("suraj/calm/second", commitsAboveTrunk: 4),
-            worktree("suraj/calm/third", commitsAboveTrunk: 6),
-            worktree("suraj/calm/fourth", commitsAboveTrunk: 8),
+            worktree("calm/first", commitsAboveTrunk: 2),
+            worktree("calm/second", commitsAboveTrunk: 4),
+            worktree("calm/third", commitsAboveTrunk: 6),
+            worktree("calm/fourth", commitsAboveTrunk: 8),
         ]
     }
 
     static var healthyPullRequests: [PullRequest] {
         [
-            pr(1, head: "suraj/calm/first"),
-            pr(2, head: "suraj/calm/second", base: "suraj/calm/first"),
-            pr(3, head: "suraj/calm/third", base: "suraj/calm/second"),
-            pr(4, head: "suraj/calm/fourth", base: "suraj/calm/third"),
+            pr(1, head: "calm/first"),
+            pr(2, head: "calm/second", base: "calm/first"),
+            pr(3, head: "calm/third", base: "calm/second"),
+            pr(4, head: "calm/fourth", base: "calm/third"),
         ]
     }
 

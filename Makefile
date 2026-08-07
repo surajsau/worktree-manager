@@ -13,9 +13,10 @@ macos:
 test:
 	cd macos && swift test $(if $(FILTER),--filter $(FILTER),)
 
-# Render the panel from fake data, both appearances, and open them
+# Render the panel from fake data, both appearances, plus settings, and open them
 render:
 	cd macos && swift build -c release
 	./macos/.build/release/WorktreeManager --render /tmp/panel-light.png --demo
 	./macos/.build/release/WorktreeManager --render /tmp/panel-dark.png --demo --dark
-	open /tmp/panel-light.png /tmp/panel-dark.png
+	./macos/.build/release/WorktreeManager --render-settings /tmp/settings.png
+	open /tmp/panel-light.png /tmp/panel-dark.png /tmp/settings.png

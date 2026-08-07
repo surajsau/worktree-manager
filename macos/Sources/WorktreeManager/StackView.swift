@@ -328,9 +328,10 @@ struct NodeRow: View {
     @AppStorage(SettingsKeys.featureBranchFrom) private var featureBranchFrom = true
     @AppStorage(SettingsKeys.featureCopyPath) private var featureCopyPath = true
     @AppStorage(SettingsKeys.featureOpenInTerminal) private var featureTerminal = true
-    @AppStorage(SettingsKeys.featureOpenInStudio) private var featureStudio = true
+    @AppStorage(SettingsKeys.featureOpenInEditor) private var featureEditor = true
     @AppStorage(SettingsKeys.featureResolveConflicts) private var featureResolveConflicts = true
-    @AppStorage(SettingsKeys.terminalApp) private var terminalApp = "Terminal"
+    @AppStorage(SettingsKeys.terminalApp) private var terminalApp = TerminalApps.selected
+    @AppStorage(SettingsKeys.editorApp) private var editorApp = EditorApps.selected
 
     private var wt: Worktree? { node.worktree }
     private var busy: Bool { wt.map { store.busyPaths.contains($0.path) } ?? false }
@@ -464,16 +465,18 @@ struct NodeRow: View {
                     }
                 }
                 if featureTerminal {
-                    MiniAppButton(icon: AppIcons.terminal(named: terminalApp), fallbackIcon: "terminal",
+                    MiniAppButton(icon: AppIcons.app(named: terminalApp, in: TerminalApps.self),
+                                  fallbackIcon: "terminal",
                                   help: terminalApp == TerminalApps.cmuxName
                                       ? "Open cmux tab here (reuses one already at this folder)"
                                       : "Open in \(terminalApp)") {
                         Task { await store.openInTerminal(wt) }
                     }
                 }
-                if featureStudio {
-                    MiniAppButton(icon: AppIcons.studio, fallbackIcon: "hammer",
-                                  help: "Open in Android Studio") {
+                if featureEditor {
+                    MiniAppButton(icon: AppIcons.app(named: editorApp, in: EditorApps.self),
+                                  fallbackIcon: "hammer",
+                                  help: "Open in \(editorApp)") {
                         Task { await store.open(wt) }
                     }
                 }
@@ -516,7 +519,7 @@ struct NodeRow: View {
                         Button {
                             Task { await store.pull(wt) }
                         } label: {
-                            Label("Pull main", systemImage: "arrow.down")
+                            Label("Pull \(Config.mainBranch)", systemImage: "arrow.down")
                         }
                         .disabled(busy || wt.conflicts || wt.behindTrunk == 0)
                         .help(wt.behindTrunk == 0

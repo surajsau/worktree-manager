@@ -231,15 +231,15 @@ final class Store: ObservableObject {
     }
 
     func open(_ wt: Worktree) async {
-        await openInStudio(path: wt.path)
+        await openInEditor(path: wt.path)
     }
 
     func openMainRepo() async {
-        await openInStudio(path: Config.mainRepo)
+        await openInEditor(path: Config.mainRepo)
     }
 
-    private func openInStudio(path: String) async {
-        let outcome = await git.open(path: path, app: Config.studioApp)
+    private func openInEditor(path: String) async {
+        let outcome = await git.open(path: path, app: EditorApps.selected)
         if !outcome.ok {
             banner = Banner(text: outcome.message ?? "failed to open", isError: true)
         }

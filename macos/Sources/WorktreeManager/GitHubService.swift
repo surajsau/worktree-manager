@@ -33,6 +33,9 @@ enum GitHubService {
     }
 
     static func fetchPullRequests() async -> Result<[PullRequest], Failure> {
+        guard Config.isConfigured else {
+            return .failure(Failure(message: "no repository set — choose one in Settings"))
+        }
         guard let gh = Config.ghPath else {
             return .failure(Failure(message: "gh CLI not found — install it with `brew install gh`"))
         }

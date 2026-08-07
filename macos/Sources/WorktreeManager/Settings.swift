@@ -5,18 +5,54 @@ import SwiftUI
 // UserDefaults keys shared between the settings window and the views that
 // consume them (via @AppStorage, so changes apply live).
 enum SettingsKeys {
+    static let repoPath = "repo.path"
+    static let worktreeDir = "repo.worktreeDir"
+    static let branchPrefix = "repo.branchPrefix"
+    static let mainBranch = "repo.mainBranch"
     static let terminalApp = "terminalApp"
+    static let editorApp = "editorApp"
     static let featurePullLatest = "feature.pullLatest"
     static let featureBranchFrom = "feature.branchFrom"
     static let featureCopyPath = "feature.copyPath"
     static let featureOpenInTerminal = "feature.openInTerminal"
-    static let featureOpenInStudio = "feature.openInStudio"
+    static let featureOpenInEditor = "feature.openInEditor"
     static let featureAddExisting = "feature.addExisting"
     static let featureResolveConflicts = "feature.resolveConflicts"
     static let pollPullRequests = "pr.poll"
 }
 
-enum TerminalApps {
+// An app a worktree can be handed to, picked from the ones actually installed.
+// Bundle IDs rather than names alone, so the app's own icon can be drawn on the
+// row button (SF Symbols has no glyph for any of these).
+protocol ExternalApps {
+    static var known: [(name: String, bundleID: String)] { get }
+    static var fallback: String { get }
+    static var settingsKey: String { get }
+}
+
+extension ExternalApps {
+    static func installed() -> [String] {
+        known.compactMap {
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.bundleID) != nil
+                ? $0.name : nil
+        }
+    }
+
+    // The stored choice, or — on a machine that has never opened Settings —
+    // whichever known app is installed.
+    static var selected: String {
+        if let stored = UserDefaults.standard.string(forKey: settingsKey), !stored.isEmpty {
+            return stored
+        }
+        return installed().first ?? fallback
+    }
+
+    static func bundleID(named name: String) -> String? {
+        known.first { $0.name == name }?.bundleID
+    }
+}
+
+enum TerminalApps: ExternalApps {
     // cmux is special-cased: opening goes through GitService.openInCmux
     // (focus-or-create tab via its CLI) instead of a plain `open -a`.
     static let cmuxName = "cmux"
@@ -31,55 +67,101 @@ enum TerminalApps {
         ("kitty", "net.kovidgoyal.kitty"),
         ("WezTerm", "com.github.wez.wezterm"),
     ]
+    static let fallback = "Terminal"
+    static let settingsKey = SettingsKeys.terminalApp
+}
 
-    static func installed() -> [String] {
-        known.compactMap {
-            NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.bundleID) != nil
-                ? $0.name : nil
-        }
-    }
-
-    static var selected: String {
-        UserDefaults.standard.string(forKey: SettingsKeys.terminalApp) ?? "Terminal"
-    }
+enum EditorApps: ExternalApps {
+    static let known: [(name: String, bundleID: String)] = [
+        ("Visual Studio Code", "com.microsoft.VSCode"),
+        ("Cursor", "com.todesktop.230313mzl4w4u92"),
+        ("Xcode", "com.apple.dt.Xcode"),
+        ("Android Studio", "com.google.android.studio"),
+        ("IntelliJ IDEA", "com.jetbrains.intellij"),
+        ("Zed", "dev.zed.Zed"),
+        ("Sublime Text", "com.sublimetext.4"),
+        ("Nova", "com.panic.Nova"),
+        ("Finder", "com.apple.finder"),
+    ]
+    // Finder is on every Mac, so "open the worktree" always does something.
+    static let fallback = "Finder"
+    static let settingsKey = SettingsKeys.editorApp
 }
 
 struct SettingsView: View {
-    @AppStorage(SettingsKeys.terminalApp) private var terminalApp = "Terminal"
+    @AppStorage(SettingsKeys.repoPath) private var repoPath = ""
+    @AppStorage(SettingsKeys.worktreeDir) private var worktreeDir = ""
+    @AppStorage(SettingsKeys.branchPrefix) private var branchPrefix = ""
+    @AppStorage(SettingsKeys.mainBranch) private var mainBranch = ""
+    @AppStorage(SettingsKeys.terminalApp) private var terminalApp = TerminalApps.selected
+    @AppStorage(SettingsKeys.editorApp) private var editorApp = EditorApps.selected
     @AppStorage(SettingsKeys.featurePullLatest) private var pullLatest = true
     @AppStorage(SettingsKeys.featureBranchFrom) private var branchFrom = true
     @AppStorage(SettingsKeys.featureCopyPath) private var copyPath = true
     @AppStorage(SettingsKeys.featureOpenInTerminal) private var openInTerminal = true
-    @AppStorage(SettingsKeys.featureOpenInStudio) private var openInStudio = true
+    @AppStorage(SettingsKeys.featureOpenInEditor) private var openInEditor = true
     @AppStorage(SettingsKeys.featureAddExisting) private var addExisting = true
     @AppStorage(SettingsKeys.featureResolveConflicts) private var resolveConflicts = true
     @AppStorage(SettingsKeys.pollPullRequests) private var pollPRs = true
 
-    // Detected once per window; Terminal.app always exists as a fallback.
+    // Detected once per window; each list has an always-present fallback.
     private let installedTerminals = TerminalApps.installed()
+    private let installedEditors = EditorApps.installed()
 
-    private var terminalChoices: [String] {
-        // Keep the stored value selectable even if that app is gone,
-        // otherwise the Picker has a selection with no matching tag.
-        installedTerminals.contains(terminalApp)
-            ? installedTerminals
-            : installedTerminals + [terminalApp]
+    // Keep the stored value selectable even if that app is gone, otherwise the
+    // Picker has a selection with no matching tag.
+    private func choices(_ installed: [String], selected: String) -> [String] {
+        installed.contains(selected) ? installed : installed + [selected]
     }
 
     var body: some View {
         Form {
-            Section("Terminal") {
-                Picker("Default terminal app", selection: $terminalApp) {
-                    ForEach(terminalChoices, id: \.self) { Text($0).tag($0) }
+            Section {
+                PathRow(label: "Repository", path: $repoPath, prompt: "/path/to/your/repo")
+                PathRow(label: "Worktree folder", path: $worktreeDir,
+                        prompt: Config.defaultWorktreeDir)
+                TextField("Main branch", text: $mainBranch, prompt: Text("main"))
+                TextField("Branch prefix", text: $branchPrefix, prompt: Text("none"))
+            } header: {
+                Text("Repository")
+            } footer: {
+                VStack(alignment: .leading, spacing: 3) {
+                    if !repoPath.isEmpty && !Self.isGitRepo(repoPath) {
+                        Label("That folder isn’t a git repository.", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                    Text("Worktrees are created in the worktree folder, one per branch. "
+                         + "Leave it empty for \(Config.defaultWorktreeDir).")
+                    Text("Main branch is the trunk stacks sit on: `origin/\(Config.mainBranch)` "
+                         + "is what new branches start from, what merged branches are measured "
+                         + "against, and what Pull merges in.")
+                    Text(branchPrefix.isEmpty
+                         ? "With no branch prefix, a new worktree named `fix-crash` becomes branch `fix-crash`."
+                         : "A new worktree named `fix-crash` becomes branch `\(branchPrefix)fix-crash`.")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Section("Apps") {
+                Picker("Terminal", selection: $terminalApp) {
+                    ForEach(choices(installedTerminals, selected: terminalApp), id: \.self) {
+                        Text($0).tag($0)
+                    }
+                }
+                .pickerStyle(.menu)
+                Picker("Editor", selection: $editorApp) {
+                    ForEach(choices(installedEditors, selected: editorApp), id: \.self) {
+                        Text($0).tag($0)
+                    }
                 }
                 .pickerStyle(.menu)
             }
             Section {
-                Toggle("Pull latest origin/main", isOn: $pullLatest)
+                Toggle("Pull latest \(Config.trunkRef)", isOn: $pullLatest)
                 Toggle("New worktree from branch", isOn: $branchFrom)
                 Toggle("Copy worktree path", isOn: $copyPath)
                 Toggle("Open in Terminal", isOn: $openInTerminal)
-                Toggle("Open in Android Studio", isOn: $openInStudio)
+                Toggle("Open in \(editorApp)", isOn: $openInEditor)
                 Toggle("Add existing branch", isOn: $addExisting)
                 Toggle("Resolve merge conflict in cmux", isOn: $resolveConflicts)
             } header: {
@@ -119,8 +201,54 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 400)
-        .fixedSize()
+        // Fixed height, not fixedSize(): with the repository fields on top of
+        // the feature list and the legend, the ideal height is taller than a
+        // laptop screen. The form scrolls inside this.
+        .frame(width: 440, height: 640)
+        // The shell scripts read the same settings from a config file, and are
+        // run outside the app often enough that it has to stay current.
+        .onChange(of: repoPath) { Config.writeShellConfig() }
+        .onChange(of: worktreeDir) { Config.writeShellConfig() }
+        .onChange(of: branchPrefix) { Config.writeShellConfig() }
+        .onChange(of: mainBranch) { Config.writeShellConfig() }
+    }
+
+    private static func isGitRepo(_ path: String) -> Bool {
+        // A worktree's .git is a file, not a directory, so existence is the test.
+        FileManager.default.fileExists(atPath: (path as NSString).appendingPathComponent(".git"))
+    }
+}
+
+// A path field with the folder picker next to it — typing a path works, but
+// nobody should have to.
+private struct PathRow: View {
+    let label: String
+    @Binding var path: String
+    let prompt: String
+
+    var body: some View {
+        LabeledContent(label) {
+            HStack(spacing: 6) {
+                TextField(label, text: $path, prompt: Text(prompt))
+                    .labelsHidden()
+                    .truncationMode(.head)
+                Button("Choose…") { choose() }
+            }
+        }
+    }
+
+    private func choose() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        if !path.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: path)
+        }
+        if panel.runModal() == .OK, let url = panel.url {
+            path = url.path
+        }
     }
 }
 

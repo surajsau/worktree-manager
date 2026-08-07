@@ -163,7 +163,7 @@ struct StoreTests {
         let r = rig(pullRequests: [])
         await r.store.refresh()
         // A stale snapshot from the view: this branch is not merged at all.
-        await r.store.pruneMerged([SampleData.worktree("suraj/live/branch", commitsAboveTrunk: 4)])
+        await r.store.pruneMerged([SampleData.worktree("live/branch", commitsAboveTrunk: 4)])
         #expect(deletes(r.git) == 0, "a destructive batch verifies every member")
         #expect(r.store.banner?.text == "Nothing to prune.")
     }
@@ -200,10 +200,10 @@ struct StoreTests {
     func failedOpen() async {
         let r = rig(pullRequests: [])
         await r.store.refresh()
-        r.git.nextOutcome = OpOutcome(ok: false, message: "Android Studio is not installed")
+        r.git.nextOutcome = OpOutcome(ok: false, message: "that editor is not installed")
         await r.store.open(r.store.worktrees[0])
         #expect(r.store.banner?.isError == true)
-        #expect(r.store.banner?.text == "Android Studio is not installed")
+        #expect(r.store.banner?.text == "that editor is not installed")
     }
 
     @Test("resolve conflicts hands the worktree to the agent command")

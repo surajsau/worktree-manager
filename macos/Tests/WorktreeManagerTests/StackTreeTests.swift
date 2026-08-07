@@ -89,8 +89,8 @@ struct StackTreeTests {
     @Test("a stack is titled by the folder of its bottom branch")
     func stackTitle() {
         let prs = [
-            SampleData.pr(1, head: "suraj/preview/enable-flag", base: "main"),
-            SampleData.pr(2, head: "suraj/preview/spot-card", base: "suraj/preview/enable-flag"),
+            SampleData.pr(1, head: "preview/enable-flag", base: "main"),
+            SampleData.pr(2, head: "preview/spot-card", base: "preview/enable-flag"),
         ]
         let stack = build([], prs).stacks[0]
         #expect(stack.title == "preview", "the folder survives new slices landing on top")
@@ -100,7 +100,7 @@ struct StackTreeTests {
 
     @Test("a branch with no folder keeps its leaf as the title")
     func leafTitleFallback() {
-        let stack = build([], [SampleData.pr(1, head: "suraj/realtime-task-2", base: "main")]).stacks[0]
+        let stack = build([], [SampleData.pr(1, head: "realtime-task-2", base: "main")]).stacks[0]
         #expect(stack.title == "realtime-task-2", "nothing else to go on")
     }
 

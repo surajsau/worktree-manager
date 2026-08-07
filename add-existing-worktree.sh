@@ -1,24 +1,28 @@
 #!/usr/bin/env bash
 #
-# Add a git worktree for an EXISTING branch of abema-androidtv, plus the
-# gitignored local files listed in copy-on-create.txt.
+# Add a git worktree for an EXISTING branch, plus the gitignored local files
+# listed in copy-on-create.txt.
 #
-# Unlike create-worktree.sh (which makes a NEW branch off origin/main), this
+# Unlike create-worktree.sh (which makes a NEW branch off the trunk), this
 # checks out a branch that already exists — either locally or on origin.
 #
 # Usage:  ./add-existing-worktree.sh <branch>
-#   <branch> is the full existing branch name (e.g. suraj/foo or feature/bar).
-#   Slashes become "+" in the folder name (suraj/foo -> suraj+foo).
+#   <branch> is the full existing branch name (e.g. feature/bar).
+#   Slashes become "+" in the folder name (feature/bar -> feature+bar).
+#
+# The repository and worktree folder come from config.sh — see the comment at
+# the top of it.
 #
 # Exit 0 on success, non-zero on failure (with an error message on stderr).
-# Safe to invoke from the web server, a Claude skill, or any shell.
+# Safe to invoke from the app, a Claude skill, or any shell.
 
 set -euo pipefail
 
 # --- Config -----------------------------------------------------------------
-MAIN_REPO="/Users/s24270/Documents/Github/abema-androidtv"
-WORKTREE_DIR="/Users/s24270/Documents/Github/worktrees"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=config.sh
+source "$SCRIPT_DIR/config.sh"
+require_repo
 COPY_LIST_FILE="$SCRIPT_DIR/copy-on-create.txt"
 
 die() { echo "error: $1" >&2; exit 1; }
