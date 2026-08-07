@@ -72,12 +72,18 @@ enum TerminalApps: ExternalApps {
 }
 
 enum EditorApps: ExternalApps {
+    // One entry per bundle ID rather than per product: a JetBrains or Studio
+    // preview channel is a separate app with its own ID, and only the ones
+    // actually installed reach the picker.
     static let known: [(name: String, bundleID: String)] = [
+        ("Android Studio", "com.google.android.studio"),
+        ("Android Studio Preview", "com.google.android.studio.preview"),
+        ("Android Studio EAP", "com.google.android.studio-EAP"),
+        ("Xcode", "com.apple.dt.Xcode"),
         ("Visual Studio Code", "com.microsoft.VSCode"),
         ("Cursor", "com.todesktop.230313mzl4w4u92"),
-        ("Xcode", "com.apple.dt.Xcode"),
-        ("Android Studio", "com.google.android.studio"),
         ("IntelliJ IDEA", "com.jetbrains.intellij"),
+        ("IntelliJ IDEA CE", "com.jetbrains.intellij.ce"),
         ("Zed", "dev.zed.Zed"),
         ("Sublime Text", "com.sublimetext.4"),
         ("Nova", "com.panic.Nova"),
