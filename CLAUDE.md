@@ -9,15 +9,13 @@ make macos                        # build the .app bundle and relaunch it
 make test                         # 61 tests, ~1s, no repo/gh/network needed
 make test FILTER=PanelRenderTests # one suite — matches type/function names, not @Test display names
 make render                       # render the panel (light + dark) and settings, then open them
-
-cd macos && swift build           # debug build only
-cd macos && swift test --filter stackTitle   # a single test, by function name
+make test FILTER=stackTitle       # a single test, by function name
 ```
 
-A menu bar dropdown can't be screenshotted without accessibility access, so the binary renders itself:
+A menu bar dropdown can't be screenshotted without accessibility access, so the binary renders itself. `make render` covers the usual pair; the rest need the release binary directly (`make render` builds it):
 
 ```bash
-./macos/.build/release/WorktreeManager --stacks           # the tree as the menu groups it
+./macos/.build/release/WorktreeManager --stacks            # the tree as the menu groups it
 ./macos/.build/release/WorktreeManager --stacks-selftest   # ...on a synthetic branching stack
 ./macos/.build/release/WorktreeManager --render out.png [--dark|--demo|--forks|--expand-first]
 ./macos/.build/release/WorktreeManager --render-settings out.png
